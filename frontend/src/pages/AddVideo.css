@@ -1,0 +1,37 @@
+/* ===== ADD VIDEO PAGE ===== */
+.addvideo-header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 2rem 1.5rem;
+  border-radius: var(--radius) var(--radius) 0 0;
+  text-align: center;
+}
+.addvideo-header h1 { color: white; font-weight: 700; }
+.addvideo-header p { opacity: 0.9; margin-bottom: 0; }
+
+.addvideo-dropzone {
+  background: white;
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius);
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.addvideo-dropzone:hover {
+  border-color: var(--primary);
+  background: var(--gray-50);
+}
+.addvideo-dropzone .icon { font-size: 3rem; color: var(--gray-400); }
+.addvideo-dropzone p { margin: 0.5rem 0 0; }
+.addvideo-dropzone small { color: var(--gray-500); }
+
+.confirmation-box {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--gray-50);
+  border-radius: var(--radius);
+  border-left: 4px solid var(--primary);
+}
+.confirmation-box .btn-group { display: flex; gap: 0.5rem; margin-top: 1rem; }
+.confirmation-box .btn-group .btn { flex: 1; }

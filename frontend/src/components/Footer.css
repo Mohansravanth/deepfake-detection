@@ -1,0 +1,29 @@
+/* ===== FOOTER ===== */
+.footer {
+  background: var(--gray-900);
+  color: rgba(255,255,255,0.7);
+  padding: 2.5rem 0;
+  margin-top: 4rem;
+}
+.footer a {
+  color: rgba(255,255,255,0.5);
+  transition: color var(--transition);
+}
+.footer a:hover { color: white; }
+.footer .social-icons { display: flex; justify-content: center; gap: 1rem; margin-top: 1rem; }
+.footer .social-icons a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.6);
+  transition: all var(--transition);
+}
+.footer .social-icons a:hover {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-4px);
+}

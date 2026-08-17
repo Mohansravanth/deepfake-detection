@@ -1,0 +1,279 @@
+/* ===== Hero Section ===== */
+.about-hero {
+  padding: 1rem 0;
+}
+
+.hero-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 0.4rem 1.2rem;
+  border-radius: 50px;
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+}
+
+.about-title {
+  font-weight: 800;
+  color: #2d3748;
+}
+
+.about-title .highlight {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.about-subtitle {
+  color: #718096;
+  font-size: 1.15rem;
+}
+
+/* ===== Team Cards ===== */
+.team-card {
+  border: none;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(102, 126, 234, 0.12);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  overflow: hidden;
+  padding: 1.5rem 1.5rem 0 1.5rem;
+}
+
+.team-card:hover {
+  transform: translateY(-10px);
+  box-shadow: 0 20px 60px rgba(102, 126, 234, 0.25);
+}
+
+/* Card Image Wrapper */
+.card-image-wrapper {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 0.5rem;
+}
+
+.team-photo {
+  border: 4px solid #e9ecef;
+  object-fit: cover;
+  transition: all 0.4s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.team-card:hover .team-photo {
+  border-color: #667eea;
+  transform: scale(1.02);
+  box-shadow: 0 12px 32px rgba(102, 126, 234, 0.25);
+}
+
+/* Social Icons */
+.card-social-icons {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%) translateY(50%);
+  display: flex;
+  gap: 0.5rem;
+  opacity: 0;
+  transition: all 0.4s ease;
+}
+
+.team-card:hover .card-social-icons {
+  opacity: 1;
+}
+
+.social-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: white;
+  color: #667eea;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  font-size: 1rem;
+}
+
+.social-icon:hover {
+  background: #667eea;
+  color: white;
+  transform: translateY(-3px);
+  box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3);
+}
+
+/* Card Text Styles */
+.team-name {
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #2d3748;
+  margin-top: 1rem;
+}
+
+.team-role {
+  font-size: 0.85rem;
+  color: #667eea;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.team-email {
+  font-size: 0.8rem;
+  color: #718096;
+  margin-bottom: 0.75rem;
+}
+
+.team-email i {
+  margin-right: 0.4rem;
+  color: #667eea;
+}
+
+.team-email a {
+  color: #718096;
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.team-email a:hover {
+  color: #667eea;
+}
+
+.team-description {
+  font-size: 0.9rem;
+  color: #4a5568;
+  line-height: 1.6;
+  margin-top: 0.5rem;
+}
+
+/* ===== Project Overview Card ===== */
+.project-overview-card {
+  border: none;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 2.5rem;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(102, 126, 234, 0.35);
+  transition: transform 0.3s ease;
+}
+
+.project-overview-card:hover {
+  transform: scale(1.01);
+}
+
+.overview-content {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.overview-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.overview-title {
+  font-weight: 700;
+  margin-bottom: 1rem;
+  color: white;
+}
+
+.overview-text {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  opacity: 0.95;
+  margin-bottom: 1.5rem;
+}
+
+.overview-text strong {
+  color: white;
+  font-weight: 700;
+}
+
+.tech-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.tech-badge {
+  background: rgba(255, 255, 255, 0.18);
+  padding: 0.4rem 1.2rem;
+  border-radius: 50px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(4px);
+  transition: all 0.3s ease;
+  color: white;
+}
+
+.tech-badge:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+/* ===== Responsive Design ===== */
+@media (max-width: 768px) {
+  .about-title {
+    font-size: 2.2rem;
+  }
+
+  .team-card {
+    padding: 1rem 1rem 0 1rem;
+  }
+
+  .team-photo {
+    width: 130px;
+    height: 130px;
+  }
+
+  .project-overview-card {
+    padding: 1.5rem;
+  }
+
+  .overview-text {
+    font-size: 0.95rem;
+  }
+
+  .tech-stack {
+    gap: 0.4rem;
+  }
+
+  .tech-badge {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.8rem;
+  }
+}
+
+@media (max-width: 576px) {
+  .about-hero {
+    padding: 0.5rem 0;
+  }
+
+  .about-title {
+    font-size: 1.8rem;
+  }
+
+  .team-photo {
+    width: 110px;
+    height: 110px;
+  }
+
+  .card-social-icons {
+    opacity: 1;
+    bottom: -10px;
+  }
+
+  .team-card:hover .card-social-icons {
+    opacity: 1;
+  }
+}
