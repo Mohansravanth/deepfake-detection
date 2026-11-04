@@ -25,10 +25,9 @@ BASE_DIR = os.path.dirname(
     )
 )
 
-MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "deepfake_model.h5"
+MODEL_PATH = os.environ.get(
+    "MODEL_PATH",
+    os.path.join(BASE_DIR, "models", "deepfake_model.h5")
 )
 
 METRICS_PATH = os.path.join(
