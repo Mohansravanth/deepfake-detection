@@ -43,17 +43,18 @@ BASE_DIR = os.path.dirname(
     )
 )
 
+DATASET_DIR = os.environ.get(
+    "DATASET_DIR",
+    os.path.join(BASE_DIR, "backend", "processed_sequences")
+)
+
 REAL_DIR = os.path.join(
-    BASE_DIR,
-    "backend",
-    "processed_sequences",
+    DATASET_DIR,
     "real"
 )
 
 FAKE_DIR = os.path.join(
-    BASE_DIR,
-    "backend",
-    "processed_sequences",
+    DATASET_DIR,
     "fake"
 )
 
