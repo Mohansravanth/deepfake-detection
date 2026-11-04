@@ -23,14 +23,6 @@ interface ModelMetrics {
   test_samples: number;
 }
 
-const formData = new FormData();
-
-if (isImage) {
-    formData.append("image", file);
-} else {
-    formData.append("video", file);
-}
-
 const Upload: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileType, setFileType] = useState<'video' | 'image' | null>(null);
