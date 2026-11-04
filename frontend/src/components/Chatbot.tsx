@@ -61,7 +61,7 @@ const Chatbot: React.FC = () => {
         >
           <Card.Header className="bg-primary text-white d-flex justify-content-between align-items-center">
             <span><i className="bi bi-robot me-2"></i>Deepfake Assistant</span>
-            <small className="text-light">Powered by AI</small>
+            <small className="text-light">Deepfake knowledge base</small>
           </Card.Header>
           <Card.Body style={{ overflowY: 'auto', maxHeight: '380px' }}>
             {messages.map((msg, idx) => (
@@ -72,7 +72,7 @@ const Chatbot: React.FC = () => {
                 >
                   {msg.text}
                   {msg.source && msg.source === 'knowledge-base' && (
-                    <div className="mt-1"><small className="text-muted fst-italic">AI‑generated</small></div>
+                    <div className="mt-1"><small className="text-muted fst-italic">Knowledge base</small></div>
                   )}
                 </div>
               </div>
