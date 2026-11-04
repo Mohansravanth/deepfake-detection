@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import axios from 'axios';
+import api from '../services/api';
 import { Container, Row, Col, Card, Form, Button, Alert, Spinner } from 'react-bootstrap';
 import './AddVideo.css'
 const AddVideo: React.FC = () => {
@@ -40,7 +40,7 @@ const AddVideo: React.FC = () => {
     setNeedsConfirmation(false);
 
     try {
-      const response = await axios.post('http://localhost:5000/add_video_auto', formData);
+      const response = await api.post('/add_video_auto', formData);
       if (response.data.needs_confirmation) {
         setNeedsConfirmation(true);
         setDetectionResult({
