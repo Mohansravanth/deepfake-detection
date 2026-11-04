@@ -5,13 +5,15 @@ import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
 import 'react-circular-progressbar/dist/styles.css';
 import './Upload.css'
 interface PredictionResult {
+  success: boolean;
   is_fake: boolean;
+  label: string;
   confidence: number;
-  raw_score: number;
-  frame_scores?: number[];
-  suspicious_frames?: number[];
-  num_frames?: number;
-  audio_features?: any;
+  fake_probability: number;
+  real_probability: number;
+  file_name?: string;
+  file_type?: string;
+  processing_time?: number;
 }
 
 interface ModelMetrics {
