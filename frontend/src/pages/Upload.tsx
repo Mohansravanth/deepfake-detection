@@ -32,7 +32,6 @@ const Upload: React.FC = () => {
   const [result, setResult] = useState<PredictionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<ModelMetrics | null>(null);
-  const [showFrameDetails, setShowFrameDetails] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -175,63 +174,12 @@ const Upload: React.FC = () => {
                   <p className="text-muted">
   Fake probability: {result.fake_probability.toFixed(4)} (0=Real, 1=Fake)
 </p>
-                  {fileType === 'video' && result.frame_scores && (
-                    <Button variant="outline-secondary" onClick={() => setShowFrameDetails(!showFrameDetails)} className="mt-2">
-                      {showFrameDetails ? 'Hide Frame Details' : 'Show Frame Details'}
-                    </Button>
-                  )}
                   <Button variant="outline-secondary" onClick={() => { setSelectedFile(null); setPreviewUrl(null); setResult(null); setFileType(null); }} className="mt-2 ms-2">
                     Test Another
                   </Button>
                 </div>
               )}
 
-              {showFrameDetails && result && result.frame_scores && (
-                <div className="mt-4">
-                  <h5>Frame‑by‑Frame Analysis</h5>
-                  <p className="text-muted small">Green = Real, Red = Fake. The model analyzes each frame independently.</p>
-                  <div className="d-flex flex-wrap" style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                    {result.frame_scores.map((score, idx) => (
-                      <div
-                        key={idx}
-                        className="m-1 p-1 text-center"
-                        style={{
-                          width: '30px',
-                          height: '30px',
-                          borderRadius: '4px',
-                          background: `rgba(255, 0, 0, ${score})`
-                        }}
-                        title={`Frame ${idx + 1}: ${Math.round(score * 100)}% fake`}
-                      >
-                        <small style={{ color: score > 0.5 ? 'white' : 'black', fontSize: '8px' }}>
-                          {idx + 1}
-                        </small>
-                      </div>
-                    ))}
-                  </div>
-                  {result.suspicious_frames && result.suspicious_frames.length > 0 && (
-                    <div className="mt-3">
-                      <Alert variant="warning">
-                        <i className="bi bi-exclamation-triangle me-2"></i>
-                        <strong>Suspicious frames:</strong> {result.suspicious_frames.map(f => `Frame ${f + 1}`).join(', ')}
-                        <br />
-                        <small>These frames show high manipulation probability (70%).</small>
-                      </Alert>
-                    </div>
-                  )}
-                  {result.audio_features && result.audio_features.has_audio && (
-                    <div className="mt-3">
-                      <Alert variant={result.audio_features.is_suspicious ? 'warning' : 'info'}>
-                        <i className="bi bi-music-note me-2"></i>
-                        <strong>Audio Analysis:</strong>{' '}
-                        {result.audio_features.is_suspicious ? 'Unusual audio patterns detected.' : 'Audio appears normal.'}
-                        <br />
-                        <small>RMS: {result.audio_features.rms?.toFixed(4)} | Spectral Centroid: {result.audio_features.spectral_centroid?.toFixed(0)}</small>
-                      </Alert>
-                    </div>
-                  )}
-                </div>
-              )}
             </Card.Body>
           </Card>
 
