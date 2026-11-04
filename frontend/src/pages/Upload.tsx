@@ -65,7 +65,7 @@ const Upload: React.FC = () => {
     setError(null);
     setResult(null);
     try {
-      const endpoint = fileType === 'image' ? '/predict_image' : '/predict_video';
+      const endpoint = "/predict";
       const response = await axios.post(`http://localhost:5000${endpoint}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
