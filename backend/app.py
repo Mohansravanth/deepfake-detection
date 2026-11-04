@@ -6,6 +6,7 @@ import json
 import tempfile
 import time
 import traceback
+import uuid
 
 import cv2
 import numpy as np
@@ -649,6 +650,118 @@ def predict():
             except Exception:
 
                 pass
+
+
+# ============================================================
+# ADD VIDEO TO TRAINING DATASET
+# ============================================================
+
+@app.route("/add_video_auto", methods=["POST"])
+def add_video_auto():
+    uploaded_file = request.files.get("video")
+
+    if uploaded_file is None or uploaded_file.filename == "":
+        return jsonify({"success": False, "error": "Please upload a video file."}), 400
+
+    extension = os.path.splitext(uploaded_file.filename)[1].lower()
+    if extension not in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
+        return jsonify({"success": False, "error": "Unsupported video format."}), 400
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp:
+            uploaded_file.save(temp.name)
+            temp_path = temp.name
+
+        sequence = extract_video_sequence(temp_path)
+        prediction = predict_sequence(sequence)
+        confirmed = request.form.get("confirmed", "false").lower() == "true"
+
+        if not confirmed:
+            return jsonify({
+                "success": True,
+                "needs_confirmation": True,
+                **prediction
+            }), 200
+
+        label = "fake" if prediction["is_fake"] else "real"
+        dataset_dir = os.environ.get(
+            "DATASET_DIR",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "processed_sequences")
+        )
+        label_dir = os.path.join(dataset_dir, label)
+        os.makedirs(label_dir, exist_ok=True)
+
+        sample_name = f"{uuid.uuid4().hex}.npy"
+        sample_path = os.path.join(label_dir, sample_name)
+        training_sequence = np.clip(sequence * 255.0, 0, 255).astype(np.uint8)
+        np.save(sample_path, training_sequence)
+
+        return jsonify({
+            "success": True,
+            "needs_confirmation": False,
+            "message": f"Video sample saved to the {label.upper()} training dataset.",
+            "label": label.upper(),
+            "file_name": sample_name
+        }), 200
+
+    except Exception as e:
+        print("Add video error:", str(e))
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+# ============================================================
+# DEEPFAKE CHAT ASSISTANT
+# ============================================================
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+    query = str(data.get("query", "")).strip()
+
+    if not query:
+        return jsonify({"success": False, "error": "Please enter a question."}), 400
+    if len(query) > 1000:
+        return jsonify({"success": False, "error": "Question must be 1000 characters or fewer."}), 400
+
+    question = query.lower()
+    knowledge = [
+        (("what is a deepfake", "define deepfake", "deepfake mean"),
+         "A deepfake is synthetic or manipulated media in which AI techniques make a person appear to say or do something they did not. Deepfakes can involve faces, voices, images, or videos."),
+        (("how detect", "detect deepfake", "how does detection", "how do you detect"),
+         "Detection systems look for visual and temporal inconsistencies. This project samples 20 frames, resizes them to 128x128, and passes the sequence to a CNN-LSTM model."),
+        (("cnn", "convolution"),
+         "A CNN learns spatial features from image frames, including facial textures and visual artefacts. Here, convolutional layers extract features from each sampled frame."),
+        (("lstm", "temporal"),
+         "An LSTM models relationships across a sequence. Here it processes frame features over time so the classifier can use temporal information from the video."),
+        (("accuracy", "confidence", "reliable", "certain"),
+         "Displayed confidence is the model's confidence in its predicted class, not a guarantee of correctness. Detection systems can make mistakes; evaluate them on a separate representative test set."),
+        (("false positive", "false negative", "wrong prediction"),
+         "A false positive is a real video incorrectly classified as fake. A false negative is a fake video incorrectly classified as real. Treat automated predictions as indicators, not definitive proof."),
+        (("ethic", "privacy", "consent"),
+         "Deepfakes raise concerns about consent, impersonation, misinformation, harassment, and privacy. Use media only with appropriate rights and consent, label synthetic content clearly, and avoid deceptive or harmful use."),
+        (("model", "architecture", "this project", "your project"),
+         "This project uses a CNN-LSTM binary classifier. It samples 20 evenly spaced video frames, resizes them to 128x128 RGB images, normalizes pixels, and predicts REAL or FAKE."),
+        (("hello", "hi", "hey"),
+         "Hello! I can explain deepfakes, CNN-LSTM detection, model confidence, common detection errors, and ethical use of synthetic media.")
+    ]
+
+    answer = ("I can help with deepfakes, this project's CNN-LSTM model, detection confidence, "
+              "common errors, and ethics. Try asking: How does the CNN-LSTM model work?")
+    for keywords, response in knowledge:
+        if any(keyword in question for keyword in keywords):
+            answer = response
+            break
+
+    return jsonify({"success": True, "response": answer, "source": "knowledge-base"}), 200
 
 
 # ============================================================
