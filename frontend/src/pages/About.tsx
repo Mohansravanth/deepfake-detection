@@ -72,6 +72,7 @@ const About: React.FC = () => {
                   className="rounded-3 mb-3 border border-2"
                   style={{ objectFit: 'cover' }}
                   alt={dev.name}
+                  onError={() => handleImageError(dev.id)}
                 />
                 <h5 className="fw-bold">{dev.name}</h5>
                 <p className="text-primary fw-semibold">{dev.role}</p>
