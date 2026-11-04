@@ -68,7 +68,7 @@ const AddVideo: React.FC = () => {
     setError(null);
 
     try {
-      const response = await axios.post('http://localhost:5000/add_video_auto', formData);
+      const response = await api.post('/add_video_auto', formData);
       setMessage(response.data.message);
       setSelectedFile(null);
       setDetectionResult(null);
