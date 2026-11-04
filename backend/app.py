@@ -750,7 +750,7 @@ def chat():
          "Deepfakes raise concerns about consent, impersonation, misinformation, harassment, and privacy. Use media only with appropriate rights and consent, label synthetic content clearly, and avoid deceptive or harmful use."),
         (("model", "architecture", "this project", "your project"),
          "This project uses a CNN-LSTM binary classifier. It samples 20 evenly spaced video frames, resizes them to 128x128 RGB images, normalizes pixels, and predicts REAL or FAKE."),
-        (("hello", "hi", "hey"),
+        (("hello", "hey", "good morning", "good evening"),
          "Hello! I can explain deepfakes, CNN-LSTM detection, model confidence, common detection errors, and ethical use of synthetic media.")
     ]
 
