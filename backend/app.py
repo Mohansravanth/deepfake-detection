@@ -31,8 +31,8 @@ MODEL_PATH = os.environ.get(
 )
 
 METRICS_PATH = os.path.join(
-    BASE_DIR,
-    "models",
+    os.path.dirname(os.path.abspath(__file__)),
+    "data",
     "metrics.json"
 )
 
