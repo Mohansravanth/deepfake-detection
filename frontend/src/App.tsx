@@ -6,7 +6,6 @@ import Home from './pages/Home';
 import About from './pages/About';
 import Upload from './pages/Upload';
 import Blogs from './pages/Blogs';
-import AddVideo from './pages/AddVideo';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './index.css';
 
@@ -21,7 +20,6 @@ function App() {
             <Route path="/about" element={<About />} />
             <Route path="/upload" element={<Upload />} />
             <Route path="/blogs" element={<Blogs />} />
-            <Route path="/add-video" element={<AddVideo />} />
           </Routes>
         </main>
         <Footer />
