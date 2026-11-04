@@ -71,7 +71,7 @@ const Chatbot: React.FC = () => {
                   style={{ maxWidth: '80%' }}
                 >
                   {msg.text}
-                  {msg.source && msg.source === 'ai' && (
+                  {msg.source && msg.source === 'knowledge-base' && (
                     <div className="mt-1"><small className="text-muted fst-italic">AI‑generated</small></div>
                   )}
                 </div>
