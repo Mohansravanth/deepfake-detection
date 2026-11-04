@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from "../services/api";
-import axios from 'axios';
 import { Container, Row, Col, Card, Button, Alert, Spinner, ProgressBar, Form } from 'react-bootstrap';
 import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
 import 'react-circular-progressbar/dist/styles.css';
