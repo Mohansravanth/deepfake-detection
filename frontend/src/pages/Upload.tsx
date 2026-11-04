@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import api from "../services/api";
 import axios from 'axios';
 import { Container, Row, Col, Card, Button, Alert, Spinner, ProgressBar, Form } from 'react-bootstrap';
 import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
@@ -42,10 +43,10 @@ const Upload: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    axios.get('http://localhost:5000/metrics')
-      .then(res => setMetrics(res.data))
+    api.get('/metrics')
+      .then(res => setMetrics(res.data.metrics))
       .catch(err => console.error('Could not load metrics:', err));
-  }, []);
+}, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -74,9 +75,11 @@ const Upload: React.FC = () => {
     setResult(null);
     try {
       const endpoint = "/predict";
-      const response = await axios.post(`http://localhost:5000${endpoint}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
+      const response = await api.post(endpoint, formData, {
+    headers: {
+        "Content-Type": "multipart/form-data",
+    },
+});
       setResult(response.data);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Analysis failed');
