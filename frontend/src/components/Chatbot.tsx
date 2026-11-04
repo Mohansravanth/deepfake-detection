@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button, Card, Form, InputGroup, Spinner } from 'react-bootstrap';
-import axios from 'axios';
+import api from '../services/api';
 
 interface Message {
   text: string;
@@ -33,7 +33,7 @@ const Chatbot: React.FC = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:5000/chat', { query: input });
+      const response = await api.post('/chat', { query: input });
       const botReply = response.data.response || "I'm not sure. Please ask something else.";
       const source = response.data.source || '';
       setMessages(prev => [...prev, { text: botReply, sender: 'bot', source }]);
