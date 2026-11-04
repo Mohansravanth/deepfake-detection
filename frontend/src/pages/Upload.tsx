@@ -172,7 +172,9 @@ const Upload: React.FC = () => {
                     {result.is_fake ? '🚨 DEEPFAKE DETECTED' : '✅ MEDIA APPEARS REAL'}
                   </h2>
                   <p className="lead">Confidence: {confidencePercent.toFixed(2)}%</p>
-                  <p className="text-muted">Raw score: {result.raw_score.toFixed(4)} (0=Real, 1=Fake)</p>
+                  <p className="text-muted">
+  Fake probability: {result.fake_probability.toFixed(4)} (0=Real, 1=Fake)
+</p>
                   {fileType === 'video' && result.frame_scores && (
                     <Button variant="outline-secondary" onClick={() => setShowFrameDetails(!showFrameDetails)} className="mt-2">
                       {showFrameDetails ? 'Hide Frame Details' : 'Show Frame Details'}
