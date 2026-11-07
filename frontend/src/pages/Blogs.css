@@ -1,0 +1,41 @@
+/* ===== BLOGS PAGE ===== */
+.blogs-header {
+  text-align: center;
+  padding: 1rem 0 2rem;
+}
+.blogs-header h1 { font-weight: 800; }
+.blogs-header p { color: var(--gray-500); font-size: 1.1rem; }
+
+.blog-card {
+  background: white;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+  height: 100%;
+}
+.blog-card:hover {
+  transform: translateY(-8px);
+  box-shadow: var(--shadow-xl);
+}
+.blog-card .card-img-top {
+  height: 180px;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+  color: white;
+}
+.blog-card .card-body { padding: 1.5rem; }
+.blog-card .card-title { font-weight: 700; font-size: 1.1rem; }
+.blog-card .card-meta { font-size: 0.8rem; color: var(--gray-500); }
+.blog-card .card-text { font-size: 0.95rem; color: var(--gray-600); }
+
+.modal-blog .modal-content {
+  border-radius: var(--radius);
+  border: none;
+  box-shadow: var(--shadow-xl);
+}
+.modal-blog .modal-header { border-bottom: 1px solid var(--gray-200); }
+.modal-blog .modal-footer { border-top: 1px solid var(--gray-200); }

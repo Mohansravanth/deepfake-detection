@@ -1,0 +1,23 @@
+{
+  "model": "frame_cnn_v1",
+  "frame_stride": 2,
+  "threshold": 0.5249999999999999,
+  "val_video_auc": 0.6534238822863611,
+  "test_video_auc": 0.48455073538499566,
+  "test_accuracy": 0.5,
+  "test_precision": 0.4727272727272727,
+  "test_recall": 0.2988505747126437,
+  "test_f1": 0.36619718309859156,
+  "test_pr_auc": 0.494048536070562,
+  "confusion_matrix": [
+    [
+      64,
+      29
+    ],
+    [
+      61,
+      26
+    ]
+  ],
+  "test_samples": 180
+}

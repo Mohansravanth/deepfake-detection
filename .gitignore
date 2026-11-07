@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Node (frontend has its own .gitignore too)
+node_modules/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Large intermediate caches (regenerable)
+backend/v2_feature_cache/*.npy
+backend/v2_feature_cache/*.npz
+backend/processed_sequences/
+backend/experimental_sequences/
+SDFVD2.0_real/
+SDFVD2.0_fake/
+image_datasets/

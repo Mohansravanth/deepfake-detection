@@ -1,0 +1,10 @@
+{
+    "model": "MobileNetV2",
+    "weights": "imagenet",
+    "sequence_length": 20,
+    "image_size": 128,
+    "feature_size": 1280,
+    "total_sequences": 910,
+    "input_normalization": "0_to_1_then_minus1_to_1",
+    "split_file": "C:\\Users\\MOHAN SRAVANTH VARMA\\OneDrive\\Desktop\\deepfake_detector\\deepfake_detector\\backend\\experimental_sequences\\v2_split.csv"
+}

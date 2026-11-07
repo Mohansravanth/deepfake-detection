@@ -1,0 +1,5748 @@
+OLD PROJECT SOURCE CODE REVIEW
+
+
+==================================================
+FILE: api\index.py
+==================================================
+
+import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+import json
+import tempfile
+import time
+import traceback
+
+import cv2
+import numpy as np
+import tensorflow as tf
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "deepfake_model.h5"
+)
+
+METRICS_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "metrics.json"
+)
+
+SEQUENCE_LENGTH = 20
+
+IMG_SIZE = 128
+
+MAX_FILE_SIZE = 100 * 1024 * 1024
+
+
+# ============================================================
+# FLASK
+# ============================================================
+
+app = Flask(__name__)
+
+CORS(app)
+
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = MAX_FILE_SIZE
+
+
+# ============================================================
+# LOAD MODEL
+# ============================================================
+
+print("=" * 60)
+print("DEEPFAKE DETECTION BACKEND")
+print("=" * 60)
+
+print(
+    "\nLoading model..."
+)
+
+if not os.path.exists(
+    MODEL_PATH
+):
+
+    raise FileNotFoundError(
+        f"\nModel not found:\n{MODEL_PATH}\n"
+        "\nRun train.py first."
+    )
+
+model = tf.keras.models.load_model(
+    MODEL_PATH,
+    compile=False
+)
+
+print(
+    "Model loaded successfully."
+)
+
+print(
+    "Model input shape:",
+    model.input_shape
+)
+
+
+# ============================================================
+# LOAD METRICS
+# ============================================================
+
+def get_metrics():
+
+    if not os.path.exists(
+        METRICS_PATH
+    ):
+
+        return {
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "test_samples": None
+        }
+
+    try:
+
+        with open(
+            METRICS_PATH,
+            "r"
+        ) as file:
+
+            return json.load(
+                file
+            )
+
+    except Exception:
+
+        return {
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "test_samples": None
+        }
+
+
+# ============================================================
+# PREPROCESS FRAME
+# ============================================================
+
+def preprocess_frame(frame):
+
+    # OpenCV BGR -> RGB
+    frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
+
+    frame = cv2.resize(
+        frame,
+        (
+            IMG_SIZE,
+            IMG_SIZE
+        ),
+        interpolation=cv2.INTER_AREA
+    )
+
+    frame = frame.astype(
+        np.float32
+    )
+
+    frame /= 255.0
+
+    return frame
+
+
+# ============================================================
+# EXTRACT VIDEO SEQUENCE
+# ============================================================
+
+def extract_video_sequence(
+    video_path
+):
+
+    cap = cv2.VideoCapture(
+        video_path
+    )
+
+    if not cap.isOpened():
+
+        raise ValueError(
+            "Unable to open video."
+        )
+
+    total_frames = int(
+        cap.get(
+            cv2.CAP_PROP_FRAME_COUNT
+        )
+    )
+
+    if total_frames <= 0:
+
+        cap.release()
+
+        raise ValueError(
+            "Video has no readable frames."
+        )
+
+    # Select 20 evenly spaced frames
+    frame_indices = np.linspace(
+        0,
+        total_frames - 1,
+        SEQUENCE_LENGTH
+    ).astype(int)
+
+    frames = []
+
+    for index in frame_indices:
+
+        cap.set(
+            cv2.CAP_PROP_POS_FRAMES,
+            int(index)
+        )
+
+        ret, frame = cap.read()
+
+        if not ret:
+
+            continue
+
+        processed = preprocess_frame(
+            frame
+        )
+
+        frames.append(
+            processed
+        )
+
+    cap.release()
+
+    if len(frames) == 0:
+
+        raise ValueError(
+            "Could not extract frames."
+        )
+
+    # Pad missing frames
+    while len(frames) < SEQUENCE_LENGTH:
+
+        frames.append(
+            frames[-1].copy()
+        )
+
+    frames = frames[
+        :SEQUENCE_LENGTH
+    ]
+
+    return np.asarray(
+        frames,
+        dtype=np.float32
+    )
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+
+def predict_sequence(
+    sequence
+):
+
+    input_data = np.expand_dims(
+        sequence,
+        axis=0
+    )
+
+    prediction = model.predict(
+        input_data,
+        verbose=0
+    )
+
+    # Model has sigmoid output
+    fake_probability = float(
+        np.asarray(
+            prediction
+        ).reshape(-1)[0]
+    )
+
+    fake_probability = max(
+        0.0,
+        min(
+            1.0,
+            fake_probability
+        )
+    )
+
+    real_probability = (
+        1.0 -
+        fake_probability
+    )
+
+    is_fake = (
+        fake_probability >= 0.5
+    )
+
+    confidence = (
+        fake_probability
+        if is_fake
+        else real_probability
+    )
+
+    return {
+
+        "is_fake":
+            bool(is_fake),
+
+        "label":
+            "FAKE"
+            if is_fake
+            else "REAL",
+
+        "confidence":
+            round(
+                confidence,
+                4
+            ),
+
+        "fake_probability":
+            round(
+                fake_probability,
+                4
+            ),
+
+        "real_probability":
+            round(
+                real_probability,
+                4
+            )
+    }
+
+
+# ============================================================
+# IMAGE PREDICTION
+# ============================================================
+
+def predict_image(
+    image_path
+):
+
+    image = cv2.imread(
+        image_path
+    )
+
+    if image is None:
+
+        raise ValueError(
+            "Unable to read image."
+        )
+
+    frame = preprocess_frame(
+        image
+    )
+
+    # Repeat image 20 times
+    sequence = np.repeat(
+        frame[np.newaxis, ...],
+        SEQUENCE_LENGTH,
+        axis=0
+    )
+
+    return predict_sequence(
+        sequence
+    )
+
+
+# ============================================================
+# VIDEO PREDICTION
+# ============================================================
+
+def predict_video(
+    video_path
+):
+
+    sequence = extract_video_sequence(
+        video_path
+    )
+
+    return predict_sequence(
+        sequence
+    )
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def home():
+
+    return jsonify({
+
+        "success": True,
+
+        "name":
+            "Deepfake Detection API",
+
+        "status":
+            "running",
+
+        "model":
+            "deepfake_model.h5",
+
+        "input":
+            "image or video",
+
+        "sequence_length":
+            SEQUENCE_LENGTH,
+
+        "image_size":
+            IMG_SIZE
+    })
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.route(
+    "/health",
+    methods=["GET"]
+)
+def health():
+
+    return jsonify({
+
+        "success": True,
+
+        "status":
+            "healthy",
+
+        "model_loaded":
+            True
+    })
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+
+@app.route(
+    "/predict",
+    methods=["POST"]
+)
+def predict():
+
+    # --------------------------------------------------------
+    # Accept:
+    #
+    # file
+    # image
+    # video
+    # --------------------------------------------------------
+
+    uploaded_file = None
+
+    if "file" in request.files:
+
+        uploaded_file = request.files[
+            "file"
+        ]
+
+    elif "image" in request.files:
+
+        uploaded_file = request.files[
+            "image"
+        ]
+
+    elif "video" in request.files:
+
+        uploaded_file = request.files[
+            "video"
+        ]
+
+    if uploaded_file is None:
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "No file uploaded."
+        }), 400
+
+    if uploaded_file.filename == "":
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "No file selected."
+        }), 400
+
+
+    filename = uploaded_file.filename
+
+    extension = os.path.splitext(
+        filename
+    )[1].lower()
+
+
+    image_extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".webp"
+    }
+
+    video_extensions = {
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm"
+    }
+
+
+    if extension in image_extensions:
+
+        file_type = "image"
+
+    elif extension in video_extensions:
+
+        file_type = "video"
+
+    else:
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "Unsupported file type."
+        }), 400
+
+
+    temp_path = None
+
+
+    try:
+
+        # ----------------------------------------------------
+        # Temporary file
+        # ----------------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=extension
+        ) as temp:
+
+            uploaded_file.save(
+                temp.name
+            )
+
+            temp_path = temp.name
+
+
+        # ----------------------------------------------------
+        # Prediction
+        # ----------------------------------------------------
+
+        start_time = time.time()
+
+        if file_type == "image":
+
+            result = predict_image(
+                temp_path
+            )
+
+        else:
+
+            result = predict_video(
+                temp_path
+            )
+
+
+        processing_time = (
+            time.time()
+            -
+            start_time
+        )
+
+
+        # ----------------------------------------------------
+        # Response
+        # ----------------------------------------------------
+
+        result.update({
+
+            "success": True,
+
+            "file_name":
+                filename,
+
+            "file_type":
+                file_type,
+
+            "processing_time":
+                round(
+                    processing_time,
+                    3
+                )
+        })
+
+
+        return jsonify(
+            result
+        ), 200
+
+
+    except Exception as e:
+
+        print(
+            "\nPrediction error:"
+        )
+
+        print(
+            str(e)
+        )
+
+        traceback.print_exc()
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                str(e)
+        }), 500
+
+
+    finally:
+
+        if (
+            temp_path
+            and os.path.exists(
+                temp_path
+            )
+        ):
+
+            try:
+
+                os.remove(
+                    temp_path
+                )
+
+            except Exception:
+
+                pass
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
+@app.route(
+    "/metrics",
+    methods=["GET"]
+)
+def metrics():
+
+    return jsonify({
+
+        "success": True,
+
+        "metrics":
+            get_metrics()
+    })
+
+
+# ============================================================
+# MODEL INFO
+# ============================================================
+
+@app.route(
+    "/model-info",
+    methods=["GET"]
+)
+def model_info():
+
+    return jsonify({
+
+        "success": True,
+
+        "framework":
+            "TensorFlow / Keras",
+
+        "model":
+            "CNN + LSTM",
+
+        "input_shape":
+            str(
+                model.input_shape
+            ),
+
+        "sequence_length":
+            SEQUENCE_LENGTH,
+
+        "image_size":
+            IMG_SIZE,
+
+        "classes": {
+
+            "0":
+                "REAL",
+
+            "1":
+                "FAKE"
+        },
+
+        "decision_threshold":
+            0.5
+    })
+
+
+# ============================================================
+# FILE TOO LARGE
+# ============================================================
+
+@app.errorhandler(
+    413
+)
+def file_too_large(error):
+
+    return jsonify({
+
+        "success": False,
+
+        "error":
+            "File is too large. Maximum size is 100 MB."
+    }), 413
+
+
+# ============================================================
+# NOT FOUND
+# ============================================================
+
+@app.errorhandler(
+    404
+)
+def not_found(error):
+
+    return jsonify({
+
+        "success": False,
+
+        "error":
+            "API endpoint not found."
+    }), 404
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("=" * 60)
+    print("SERVER STARTING")
+    print("=" * 60)
+
+    print(
+        "URL: http://localhost:5000"
+    )
+
+    print(
+        "Prediction: "
+        "POST /predict"
+    )
+
+    print(
+        "Metrics: "
+        "GET /metrics"
+    )
+
+    print(
+        "Health: "
+        "GET /health"
+    )
+
+    print(
+        "Model info: "
+        "GET /model-info"
+    )
+
+    print("=" * 60)
+
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False
+    )
+
+
+==================================================
+FILE: backend\app.py
+==================================================
+
+import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+import json
+import tempfile
+import time
+import traceback
+
+import cv2
+import numpy as np
+import tensorflow as tf
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "deepfake_model.h5"
+)
+
+METRICS_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "metrics.json"
+)
+
+SEQUENCE_LENGTH = 20
+
+IMG_SIZE = 128
+
+MAX_FILE_SIZE = 100 * 1024 * 1024
+
+
+# ============================================================
+# FLASK
+# ============================================================
+
+app = Flask(__name__)
+
+CORS(app)
+
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = MAX_FILE_SIZE
+
+
+# ============================================================
+# LOAD MODEL
+# ============================================================
+
+print("=" * 60)
+print("DEEPFAKE DETECTION BACKEND")
+print("=" * 60)
+
+print(
+    "\nLoading model..."
+)
+
+if not os.path.exists(
+    MODEL_PATH
+):
+
+    raise FileNotFoundError(
+        f"\nModel not found:\n{MODEL_PATH}\n"
+        "\nRun train.py first."
+    )
+
+model = tf.keras.models.load_model(
+    MODEL_PATH,
+    compile=False
+)
+
+print(
+    "Model loaded successfully."
+)
+
+print(
+    "Model input shape:",
+    model.input_shape
+)
+
+
+# ============================================================
+# LOAD METRICS
+# ============================================================
+
+def get_metrics():
+
+    if not os.path.exists(
+        METRICS_PATH
+    ):
+
+        return {
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "test_samples": None
+        }
+
+    try:
+
+        with open(
+            METRICS_PATH,
+            "r"
+        ) as file:
+
+            return json.load(
+                file
+            )
+
+    except Exception:
+
+        return {
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "test_samples": None
+        }
+
+
+# ============================================================
+# PREPROCESS FRAME
+# ============================================================
+
+def preprocess_frame(frame):
+
+    # OpenCV BGR -> RGB
+    frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
+
+    frame = cv2.resize(
+        frame,
+        (
+            IMG_SIZE,
+            IMG_SIZE
+        ),
+        interpolation=cv2.INTER_AREA
+    )
+
+    frame = frame.astype(
+        np.float32
+    )
+
+    frame /= 255.0
+
+    return frame
+
+
+# ============================================================
+# EXTRACT VIDEO SEQUENCE
+# ============================================================
+
+def extract_video_sequence(
+    video_path
+):
+
+    cap = cv2.VideoCapture(
+        video_path
+    )
+
+    if not cap.isOpened():
+
+        raise ValueError(
+            "Unable to open video."
+        )
+
+    total_frames = int(
+        cap.get(
+            cv2.CAP_PROP_FRAME_COUNT
+        )
+    )
+
+    if total_frames <= 0:
+
+        cap.release()
+
+        raise ValueError(
+            "Video has no readable frames."
+        )
+
+    # Select 20 evenly spaced frames
+    frame_indices = np.linspace(
+        0,
+        total_frames - 1,
+        SEQUENCE_LENGTH
+    ).astype(int)
+
+    frames = []
+
+    for index in frame_indices:
+
+        cap.set(
+            cv2.CAP_PROP_POS_FRAMES,
+            int(index)
+        )
+
+        ret, frame = cap.read()
+
+        if not ret:
+
+            continue
+
+        processed = preprocess_frame(
+            frame
+        )
+
+        frames.append(
+            processed
+        )
+
+    cap.release()
+
+    if len(frames) == 0:
+
+        raise ValueError(
+            "Could not extract frames."
+        )
+
+    # Pad missing frames
+    while len(frames) < SEQUENCE_LENGTH:
+
+        frames.append(
+            frames[-1].copy()
+        )
+
+    frames = frames[
+        :SEQUENCE_LENGTH
+    ]
+
+    return np.asarray(
+        frames,
+        dtype=np.float32
+    )
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+
+def predict_sequence(
+    sequence
+):
+
+    input_data = np.expand_dims(
+        sequence,
+        axis=0
+    )
+
+    prediction = model.predict(
+        input_data,
+        verbose=0
+    )
+
+    # Model has sigmoid output
+    fake_probability = float(
+        np.asarray(
+            prediction
+        ).reshape(-1)[0]
+    )
+
+    fake_probability = max(
+        0.0,
+        min(
+            1.0,
+            fake_probability
+        )
+    )
+
+    real_probability = (
+        1.0 -
+        fake_probability
+    )
+
+    is_fake = (
+        fake_probability >= 0.5
+    )
+
+    confidence = (
+        fake_probability
+        if is_fake
+        else real_probability
+    )
+
+    return {
+
+        "is_fake":
+            bool(is_fake),
+
+        "label":
+            "FAKE"
+            if is_fake
+            else "REAL",
+
+        "confidence":
+            round(
+                confidence,
+                4
+            ),
+
+        "fake_probability":
+            round(
+                fake_probability,
+                4
+            ),
+
+        "real_probability":
+            round(
+                real_probability,
+                4
+            )
+    }
+
+
+# ============================================================
+# IMAGE PREDICTION
+# ============================================================
+
+def predict_image(
+    image_path
+):
+
+    image = cv2.imread(
+        image_path
+    )
+
+    if image is None:
+
+        raise ValueError(
+            "Unable to read image."
+        )
+
+    frame = preprocess_frame(
+        image
+    )
+
+    # Repeat image 20 times
+    sequence = np.repeat(
+        frame[np.newaxis, ...],
+        SEQUENCE_LENGTH,
+        axis=0
+    )
+
+    return predict_sequence(
+        sequence
+    )
+
+
+# ============================================================
+# VIDEO PREDICTION
+# ============================================================
+
+def predict_video(
+    video_path
+):
+
+    sequence = extract_video_sequence(
+        video_path
+    )
+
+    return predict_sequence(
+        sequence
+    )
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def home():
+
+    return jsonify({
+
+        "success": True,
+
+        "name":
+            "Deepfake Detection API",
+
+        "status":
+            "running",
+
+        "model":
+            "deepfake_model.h5",
+
+        "input":
+            "image or video",
+
+        "sequence_length":
+            SEQUENCE_LENGTH,
+
+        "image_size":
+            IMG_SIZE
+    })
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.route(
+    "/health",
+    methods=["GET"]
+)
+def health():
+
+    return jsonify({
+
+        "success": True,
+
+        "status":
+            "healthy",
+
+        "model_loaded":
+            True
+    })
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+
+@app.route(
+    "/predict",
+    methods=["POST"]
+)
+def predict():
+
+    # --------------------------------------------------------
+    # Accept:
+    #
+    # file
+    # image
+    # video
+    # --------------------------------------------------------
+
+    uploaded_file = None
+
+    if "file" in request.files:
+
+        uploaded_file = request.files[
+            "file"
+        ]
+
+    elif "image" in request.files:
+
+        uploaded_file = request.files[
+            "image"
+        ]
+
+    elif "video" in request.files:
+
+        uploaded_file = request.files[
+            "video"
+        ]
+
+    if uploaded_file is None:
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "No file uploaded."
+        }), 400
+
+    if uploaded_file.filename == "":
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "No file selected."
+        }), 400
+
+
+    filename = uploaded_file.filename
+
+    extension = os.path.splitext(
+        filename
+    )[1].lower()
+
+
+    image_extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".webp"
+    }
+
+    video_extensions = {
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm"
+    }
+
+
+    if extension in image_extensions:
+
+        file_type = "image"
+
+    elif extension in video_extensions:
+
+        file_type = "video"
+
+    else:
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                "Unsupported file type."
+        }), 400
+
+
+    temp_path = None
+
+
+    try:
+
+        # ----------------------------------------------------
+        # Temporary file
+        # ----------------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=extension
+        ) as temp:
+
+            uploaded_file.save(
+                temp.name
+            )
+
+            temp_path = temp.name
+
+
+        # ----------------------------------------------------
+        # Prediction
+        # ----------------------------------------------------
+
+        start_time = time.time()
+
+        if file_type == "image":
+
+            result = predict_image(
+                temp_path
+            )
+
+        else:
+
+            result = predict_video(
+                temp_path
+            )
+
+
+        processing_time = (
+            time.time()
+            -
+            start_time
+        )
+
+
+        # ----------------------------------------------------
+        # Response
+        # ----------------------------------------------------
+
+        result.update({
+
+            "success": True,
+
+            "file_name":
+                filename,
+
+            "file_type":
+                file_type,
+
+            "processing_time":
+                round(
+                    processing_time,
+                    3
+                )
+        })
+
+
+        return jsonify(
+            result
+        ), 200
+
+
+    except Exception as e:
+
+        print(
+            "\nPrediction error:"
+        )
+
+        print(
+            str(e)
+        )
+
+        traceback.print_exc()
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                str(e)
+        }), 500
+
+
+    finally:
+
+        if (
+            temp_path
+            and os.path.exists(
+                temp_path
+            )
+        ):
+
+            try:
+
+                os.remove(
+                    temp_path
+                )
+
+            except Exception:
+
+                pass
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
+@app.route(
+    "/metrics",
+    methods=["GET"]
+)
+def metrics():
+
+    return jsonify({
+
+        "success": True,
+
+        "metrics":
+            get_metrics()
+    })
+
+
+# ============================================================
+# MODEL INFO
+# ============================================================
+
+@app.route(
+    "/model-info",
+    methods=["GET"]
+)
+def model_info():
+
+    return jsonify({
+
+        "success": True,
+
+        "framework":
+            "TensorFlow / Keras",
+
+        "model":
+            "CNN + LSTM",
+
+        "input_shape":
+            str(
+                model.input_shape
+            ),
+
+        "sequence_length":
+            SEQUENCE_LENGTH,
+
+        "image_size":
+            IMG_SIZE,
+
+        "classes": {
+
+            "0":
+                "REAL",
+
+            "1":
+                "FAKE"
+        },
+
+        "decision_threshold":
+            0.5
+    })
+
+
+# ============================================================
+# FILE TOO LARGE
+# ============================================================
+
+@app.errorhandler(
+    413
+)
+def file_too_large(error):
+
+    return jsonify({
+
+        "success": False,
+
+        "error":
+            "File is too large. Maximum size is 100 MB."
+    }), 413
+
+
+# ============================================================
+# NOT FOUND
+# ============================================================
+
+@app.errorhandler(
+    404
+)
+def not_found(error):
+
+    return jsonify({
+
+        "success": False,
+
+        "error":
+            "API endpoint not found."
+    }), 404
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("=" * 60)
+    print("SERVER STARTING")
+    print("=" * 60)
+
+    print(
+        "URL: http://localhost:5000"
+    )
+
+    print(
+        "Prediction: "
+        "POST /predict"
+    )
+
+    print(
+        "Metrics: "
+        "GET /metrics"
+    )
+
+    print(
+        "Health: "
+        "GET /health"
+    )
+
+    print(
+        "Model info: "
+        "GET /model-info"
+    )
+
+    print("=" * 60)
+
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False
+    )
+
+
+==================================================
+FILE: backend\chatbot.py
+==================================================
+
+import random
+import requests
+import os
+
+# Large knowledge base (expanded)
+KNOWLEDGE = {
+    "what is deepfake": [
+        "A deepfake is synthetic media created using artificial intelligence, where a person's likeness is replaced with someone else's. It often uses generative adversarial networks (GANs).",
+        "Deepfakes are AI-generated videos or images that manipulate a person's appearance or voice. They can be used for entertainment, but also for misinformation and fraud."
+    ],
+    "how to detect deepfake": [
+        "Look for unnatural blinking, inconsistent lighting, unusual mouth movements, and artefacts around face edges. Use tools like this Deepfake Detector!",
+        "Detection methods include analyzing facial landmarks, skin texture, eye reflections, and temporal inconsistencies across frames."
+    ],
+    "ethics": [
+        "Deepfakes raise serious ethical concerns: they can be used for identity theft, political disinformation, and non‑consensual pornography. Responsible use and detection are crucial.",
+        "Ethical guidelines include mandatory watermarking of AI‑generated content, media literacy education, and legal frameworks to penalize malicious use."
+    ],
+    "future of deepfake": [
+        "Future detection will involve multi‑modal analysis (visual + audio + metadata), frequency domain analysis, GAN fingerprints, and blockchain provenance tracking.",
+        "As deepfakes improve, detection tools will also evolve using more advanced neural networks and larger datasets."
+    ],
+    "what can i do": [
+        "You can upload a video or image to our detector. You can also educate others about deepfakes and support research in AI forensics.",
+        "Use our tool regularly, share your results, and stay updated on the latest detection techniques."
+    ],
+    "how accurate": [
+        "Our model achieves over 90% accuracy on the SDFVD dataset, with precision and recall around 85‑95%. Metrics are displayed on the upload page.",
+        "The model's performance is continuously improving as we add more training data and refine the architecture."
+    ]
+}
+
+def chatbot_response(query):
+    """
+    Return a response based on keyword matching.
+    If no match, ask if the user wants to use the AI API.
+    """
+    query_lower = query.lower()
+    for key, responses in KNOWLEDGE.items():
+        if key in query_lower:
+            return random.choice(responses)
+    return None
+
+def get_ai_response(query):
+    """
+    Use Hugging Face Inference API (free) for a more intelligent answer.
+    Requires HF_TOKEN environment variable.
+    """
+    api_token = os.environ.get("HF_TOKEN")
+    if not api_token:
+        return None
+
+    headers = {"Authorization": f"Bearer {api_token}"}
+    payload = {
+        "inputs": f"Answer the following question about deepfakes concisely: {query}",
+        "parameters": {"max_new_tokens": 150, "temperature": 0.7}
+    }
+    try:
+        response = requests.post(
+            "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, list):
+                return data[0].get("generated_text", "").strip()
+    except:
+        pass
+    return None
+
+
+==================================================
+FILE: backend\data_generator.py
+==================================================
+
+import os
+import numpy as np
+import tensorflow as tf
+
+
+class VideoSequenceGenerator(tf.keras.utils.Sequence):
+
+    def __init__(
+        self,
+        real_dir,
+        fake_dir,
+        batch_size=1,
+        shuffle=True
+    ):
+
+        self.real_dir = real_dir
+        self.fake_dir = fake_dir
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+        self.file_paths = []
+        self.labels = []
+
+        # ============================================
+        # LOAD REAL DATA
+        # ============================================
+
+        if os.path.exists(real_dir):
+
+            for filename in os.listdir(real_dir):
+
+                if filename.lower().endswith(".npy"):
+
+                    path = os.path.join(
+                        real_dir,
+                        filename
+                    )
+
+                    self.file_paths.append(path)
+                    self.labels.append(0)
+
+        # ============================================
+        # LOAD FAKE DATA
+        # ============================================
+
+        if os.path.exists(fake_dir):
+
+            for filename in os.listdir(fake_dir):
+
+                if filename.lower().endswith(".npy"):
+
+                    path = os.path.join(
+                        fake_dir,
+                        filename
+                    )
+
+                    self.file_paths.append(path)
+                    self.labels.append(1)
+
+        self.file_paths = np.array(
+            self.file_paths
+        )
+
+        self.labels = np.array(
+            self.labels,
+            dtype=np.float32
+        )
+
+        self.indices = np.arange(
+            len(self.file_paths)
+        )
+
+        self.on_epoch_end()
+
+        print(
+            f"Generator loaded: "
+            f"{len(self.file_paths)} samples"
+        )
+
+        print(
+            f"Real: {np.sum(self.labels == 0)}"
+        )
+
+        print(
+            f"Fake: {np.sum(self.labels == 1)}"
+        )
+
+
+    def __len__(self):
+
+        return int(
+            np.ceil(
+                len(self.file_paths)
+                / self.batch_size
+            )
+        )
+
+
+    def __getitem__(self, index):
+
+        start = (
+            index *
+            self.batch_size
+        )
+
+        end = min(
+            start +
+            self.batch_size,
+            len(self.file_paths)
+        )
+
+        batch_indices = self.indices[
+            start:end
+        ]
+
+        batch_paths = self.file_paths[
+            batch_indices
+        ]
+
+        batch_labels = self.labels[
+            batch_indices
+        ]
+
+        batch_x = []
+
+        for path in batch_paths:
+
+            try:
+
+                sequence = np.load(
+                    path
+                ).astype(
+                    np.float32
+                )
+
+                # ====================================
+                # EXPECTED SHAPE:
+                #
+                # (20, 128, 128, 3)
+                # ====================================
+
+                if sequence.ndim != 4:
+
+                    raise ValueError(
+                        f"Invalid shape {sequence.shape}"
+                    )
+
+                # Normalize if stored as uint8
+                if sequence.max() > 1.0:
+
+                    sequence = (
+                        sequence / 255.0
+                    )
+
+                batch_x.append(
+                    sequence
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Error loading {path}: {e}"
+                )
+
+                # Fallback
+                batch_x.append(
+                    np.zeros(
+                        (20, 128, 128, 3),
+                        dtype=np.float32
+                    )
+                )
+
+        batch_x = np.asarray(
+            batch_x,
+            dtype=np.float32
+        )
+
+        batch_labels = np.asarray(
+            batch_labels,
+            dtype=np.float32
+        )
+
+        return batch_x, batch_labels
+
+
+    def on_epoch_end(self):
+
+        if self.shuffle:
+
+            np.random.shuffle(
+                self.indices
+            )
+
+
+==================================================
+FILE: backend\evaluate.py
+==================================================
+
+import os
+import json
+
+import numpy as np
+import tensorflow as tf
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SEQUENCE_LENGTH = 20
+
+IMG_SIZE = 128
+
+CHANNELS = 3
+
+BATCH_SIZE = 2
+
+RANDOM_STATE = 42
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+REAL_DIR = os.path.join(
+    BASE_DIR,
+    "backend",
+    "processed_sequences",
+    "real"
+)
+
+FAKE_DIR = os.path.join(
+    BASE_DIR,
+    "backend",
+    "processed_sequences",
+    "fake"
+)
+
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "deepfake_model.h5"
+)
+
+METRICS_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "metrics.json"
+)
+
+
+# ============================================================
+# LOAD DATASET PATHS
+# ============================================================
+
+def get_dataset():
+
+    paths = []
+    labels = []
+
+    if os.path.exists(
+        REAL_DIR
+    ):
+
+        for filename in os.listdir(
+            REAL_DIR
+        ):
+
+            if filename.endswith(
+                ".npy"
+            ):
+
+                paths.append(
+                    os.path.join(
+                        REAL_DIR,
+                        filename
+                    )
+                )
+
+                labels.append(0)
+
+    if os.path.exists(
+        FAKE_DIR
+    ):
+
+        for filename in os.listdir(
+            FAKE_DIR
+        ):
+
+            if filename.endswith(
+                ".npy"
+            ):
+
+                paths.append(
+                    os.path.join(
+                        FAKE_DIR,
+                        filename
+                    )
+                )
+
+                labels.append(1)
+
+    return (
+        np.asarray(paths),
+        np.asarray(labels)
+    )
+
+
+# ============================================================
+# LOAD SEQUENCES
+# ============================================================
+
+def load_sequences(paths):
+
+    sequences = []
+
+    valid_paths = []
+
+    for path in paths:
+
+        try:
+
+            sequence = np.load(
+                path
+            ).astype(
+                np.float32
+            )
+
+            if sequence.shape != (
+                SEQUENCE_LENGTH,
+                IMG_SIZE,
+                IMG_SIZE,
+                CHANNELS
+            ):
+
+                continue
+
+            sequence /= 255.0
+
+            sequences.append(
+                sequence
+            )
+
+            valid_paths.append(
+                path
+            )
+
+        except Exception as e:
+
+            print(
+                f"Skipping {path}: {e}"
+            )
+
+    return np.asarray(
+        sequences,
+        dtype=np.float32
+    ), valid_paths
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print("=" * 60)
+    print("DEEPFAKE MODEL EVALUATION")
+    print("=" * 60)
+
+    # --------------------------------------------
+    # Dataset
+    # --------------------------------------------
+
+    paths, labels = get_dataset()
+
+    print(
+        f"Total samples: {len(paths)}"
+    )
+
+    # --------------------------------------------
+    # Same test split as training
+    # --------------------------------------------
+
+    (
+        _,
+        test_paths,
+        _,
+        test_labels
+    ) = train_test_split(
+        paths,
+        labels,
+        test_size=0.2,
+        random_state=RANDOM_STATE,
+        stratify=labels
+    )
+
+    print(
+        f"Test samples: {len(test_paths)}"
+    )
+
+    # --------------------------------------------
+    # Load
+    # --------------------------------------------
+
+    X_test, valid_paths = load_sequences(
+        test_paths
+    )
+
+    # Match labels to successfully loaded files
+    valid_set = set(valid_paths)
+
+    y_test = []
+
+    for path in valid_paths:
+
+        if path in test_paths:
+
+            index = list(
+                test_paths
+            ).index(path)
+
+            y_test.append(
+                test_labels[index]
+            )
+
+    y_test = np.asarray(
+        y_test
+    )
+
+    print(
+        f"Valid test samples: "
+        f"{len(X_test)}"
+    )
+
+    # --------------------------------------------
+    # Model
+    # --------------------------------------------
+
+    if not os.path.exists(
+        MODEL_PATH
+    ):
+
+        raise FileNotFoundError(
+            f"Model not found: "
+            f"{MODEL_PATH}"
+        )
+
+    model = tf.keras.models.load_model(
+        MODEL_PATH
+    )
+
+    print(
+        "Model loaded successfully."
+    )
+
+    # --------------------------------------------
+    # Predict
+    # --------------------------------------------
+
+    probabilities = model.predict(
+        X_test,
+        batch_size=BATCH_SIZE,
+        verbose=1
+    ).flatten()
+
+    predictions = (
+        probabilities >= 0.5
+    ).astype(int)
+
+    # --------------------------------------------
+    # Metrics
+    # --------------------------------------------
+
+    accuracy = accuracy_score(
+        y_test,
+        predictions
+    )
+
+    precision = precision_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    recall = recall_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    f1 = f1_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    cm = confusion_matrix(
+        y_test,
+        predictions
+    )
+
+    print("\n" + "=" * 60)
+    print("EVALUATION RESULTS")
+    print("=" * 60)
+
+    print(
+        f"Accuracy : {accuracy:.4f}"
+    )
+
+    print(
+        f"Precision: {precision:.4f}"
+    )
+
+    print(
+        f"Recall   : {recall:.4f}"
+    )
+
+    print(
+        f"F1 Score : {f1:.4f}"
+    )
+
+    print("\nClassification Report:")
+
+    print(
+        classification_report(
+            y_test,
+            predictions,
+            target_names=[
+                "REAL",
+                "FAKE"
+            ],
+            zero_division=0
+        )
+    )
+
+    print(
+        "\nConfusion Matrix:"
+    )
+
+    print(cm)
+
+    # --------------------------------------------
+    # Save metrics
+    # --------------------------------------------
+
+    metrics = {
+
+        "accuracy": float(
+            accuracy
+        ),
+
+        "precision": float(
+            precision
+        ),
+
+        "recall": float(
+            recall
+        ),
+
+        "f1_score": float(
+            f1
+        ),
+
+        "test_samples": int(
+            len(y_test)
+        )
+    }
+
+    os.makedirs(
+        os.path.dirname(
+            METRICS_PATH
+        ),
+        exist_ok=True
+    )
+
+    with open(
+        METRICS_PATH,
+        "w"
+    ) as file:
+
+        json.dump(
+            metrics,
+            file,
+            indent=4
+        )
+
+    print(
+        "\nMetrics saved to:"
+    )
+
+    print(
+        METRICS_PATH
+    )
+
+
+==================================================
+FILE: backend\preprocessor.py
+==================================================
+
+import cv2
+import numpy as np
+import os
+import gc
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SEQUENCE_LENGTH = 20
+
+IMG_SIZE = 128
+
+MAX_FRAMES = 30
+
+FRAME_SKIP = 6
+
+MAX_DIMENSION = 320
+
+
+# ============================================================
+# FACE EXTRACTION
+# ============================================================
+
+def extract_faces_haar(video_path):
+
+    cap = cv2.VideoCapture(
+        video_path
+    )
+
+    if not cap.isOpened():
+
+        return None
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades +
+        "haarcascade_frontalface_default.xml"
+    )
+
+    faces = []
+
+    frame_count = 0
+
+    while (
+        len(faces) < SEQUENCE_LENGTH
+        and frame_count < MAX_FRAMES
+    ):
+
+        ret, frame = cap.read()
+
+        if not ret:
+
+            break
+
+        frame_count += 1
+
+        # Skip frames
+        if frame_count % FRAME_SKIP != 0:
+
+            continue
+
+        # ============================================
+        # RESIZE LARGE FRAME
+        # ============================================
+
+        try:
+
+            h, w = frame.shape[:2]
+
+            if max(h, w) > MAX_DIMENSION:
+
+                scale = (
+                    MAX_DIMENSION /
+                    max(h, w)
+                )
+
+                new_w = int(
+                    w * scale
+                )
+
+                new_h = int(
+                    h * scale
+                )
+
+                frame = cv2.resize(
+                    frame,
+                    (new_w, new_h),
+                    interpolation=cv2.INTER_AREA
+                )
+
+        except Exception:
+
+            continue
+
+        # ============================================
+        # FACE DETECTION
+        # ============================================
+
+        try:
+
+            gray = cv2.cvtColor(
+                frame,
+                cv2.COLOR_BGR2GRAY
+            )
+
+            detected = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(30, 30)
+            )
+
+        except Exception:
+
+            continue
+
+        if len(detected) == 0:
+
+            continue
+
+        # ============================================
+        # LARGEST FACE
+        # ============================================
+
+        x, y, w, h = max(
+            detected,
+            key=lambda rect:
+                rect[2] * rect[3]
+        )
+
+        face = frame[
+            y:y+h,
+            x:x+w
+        ]
+
+        if face.size == 0:
+
+            continue
+
+        try:
+
+            face = cv2.resize(
+                face,
+                (IMG_SIZE, IMG_SIZE),
+                interpolation=cv2.INTER_AREA
+            )
+
+            faces.append(
+                face
+            )
+
+        except Exception:
+
+            continue
+
+    cap.release()
+
+    gc.collect()
+
+    # ================================================
+    # PAD IF FEWER THAN 20 FACES
+    # ================================================
+
+    if len(faces) > 0:
+
+        while len(faces) < SEQUENCE_LENGTH:
+
+            faces.append(
+                faces[-1].copy()
+            )
+
+    if len(faces) == 0:
+
+        return None
+
+    return np.asarray(
+        faces,
+        dtype=np.uint8
+    )
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+REAL_DIR = os.path.join(
+    BASE_DIR,
+    "SDFVD2.0_real"
+)
+
+FAKE_DIR = os.path.join(
+    BASE_DIR,
+    "SDFVD2.0_fake"
+)
+
+OUTPUT_DIR = os.path.join(
+    BASE_DIR,
+    "backend",
+    "processed_sequences"
+)
+
+REAL_OUTPUT = os.path.join(
+    OUTPUT_DIR,
+    "real"
+)
+
+FAKE_OUTPUT = os.path.join(
+    OUTPUT_DIR,
+    "fake"
+)
+
+os.makedirs(
+    REAL_OUTPUT,
+    exist_ok=True
+)
+
+os.makedirs(
+    FAKE_OUTPUT,
+    exist_ok=True
+)
+
+
+# ============================================================
+# PROCESS FUNCTION
+# ============================================================
+
+def process_directory(
+    input_dir,
+    output_dir,
+    label_name
+):
+
+    if not os.path.exists(input_dir):
+
+        print(
+            f"ERROR: Directory not found:"
+            f"\n{input_dir}"
+        )
+
+        return 0, 0
+
+    saved = 0
+    skipped = 0
+
+    videos = sorted(
+        os.listdir(input_dir)
+    )
+
+    for index, video in enumerate(videos):
+
+        if not video.lower().endswith(
+            (
+                ".mp4",
+                ".avi",
+                ".mov",
+                ".mkv",
+                ".webm"
+            )
+        ):
+
+            continue
+
+        video_path = os.path.join(
+            input_dir,
+            video
+        )
+
+        print(
+            f"[{index + 1}] "
+            f"Processing {label_name}: "
+            f"{video}"
+        )
+
+        try:
+
+            sequence = extract_faces_haar(
+                video_path
+            )
+
+            if (
+                sequence is None
+                or len(sequence) != SEQUENCE_LENGTH
+            ):
+
+                print(
+                    "   SKIPPED - insufficient faces"
+                )
+
+                skipped += 1
+
+                continue
+
+            # Use original filename
+            base_name = os.path.splitext(
+                video
+            )[0]
+
+            output_path = os.path.join(
+                output_dir,
+                base_name + ".npy"
+            )
+
+            np.save(
+                output_path,
+                sequence
+            )
+
+            print(
+                f"   SAVED -> {output_path}"
+            )
+
+            saved += 1
+
+        except Exception as e:
+
+            print(
+                f"   ERROR: {e}"
+            )
+
+            skipped += 1
+
+    return saved, skipped
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("=" * 60)
+    print("DEEPFAKE DATASET PREPROCESSOR")
+    print("=" * 60)
+
+    print(
+        f"Sequence length : {SEQUENCE_LENGTH}"
+    )
+
+    print(
+        f"Image size      : {IMG_SIZE}x{IMG_SIZE}"
+    )
+
+    print(
+        f"Maximum frames  : {MAX_FRAMES}"
+    )
+
+    print(
+        f"Frame skip      : {FRAME_SKIP}"
+    )
+
+    print("=" * 60)
+
+    print("\nProcessing REAL videos...")
+
+    real_saved, real_skipped = process_directory(
+        REAL_DIR,
+        REAL_OUTPUT,
+        "REAL"
+    )
+
+    print("\nProcessing FAKE videos...")
+
+    fake_saved, fake_skipped = process_directory(
+        FAKE_DIR,
+        FAKE_OUTPUT,
+        "FAKE"
+    )
+
+    print("\n" + "=" * 60)
+    print("PREPROCESSING COMPLETE")
+    print("=" * 60)
+
+    print(
+        f"REAL saved   : {real_saved}"
+    )
+
+    print(
+        f"REAL skipped : {real_skipped}"
+    )
+
+    print(
+        f"FAKE saved   : {fake_saved}"
+    )
+
+    print(
+        f"FAKE skipped : {fake_skipped}"
+    )
+
+    print(
+        f"TOTAL        : "
+        f"{real_saved + fake_saved}"
+    )
+
+    print("=" * 60)
+
+
+==================================================
+FILE: backend\train.py
+==================================================
+
+import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+import numpy as np
+import tensorflow as tf
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SEQUENCE_LENGTH = 20
+
+IMG_SIZE = 128
+
+CHANNELS = 3
+
+BATCH_SIZE = 2
+
+EPOCHS = 10
+
+LEARNING_RATE = 0.0001
+
+RANDOM_STATE = 42
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+REAL_DIR = os.path.join(
+    BASE_DIR,
+    "backend",
+    "processed_sequences",
+    "real"
+)
+
+FAKE_DIR = os.path.join(
+    BASE_DIR,
+    "backend",
+    "processed_sequences",
+    "fake"
+)
+
+MODEL_DIR = os.path.join(
+    BASE_DIR,
+    "models"
+)
+
+MODEL_PATH = os.path.join(
+    MODEL_DIR,
+    "deepfake_model.h5"
+)
+
+METRICS_PATH = os.path.join(
+    MODEL_DIR,
+    "metrics.json"
+)
+
+os.makedirs(
+    MODEL_DIR,
+    exist_ok=True
+)
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+def load_dataset():
+
+    paths = []
+    labels = []
+
+    # REAL = 0
+    if os.path.exists(REAL_DIR):
+
+        for filename in os.listdir(
+            REAL_DIR
+        ):
+
+            if filename.endswith(
+                ".npy"
+            ):
+
+                paths.append(
+                    os.path.join(
+                        REAL_DIR,
+                        filename
+                    )
+                )
+
+                labels.append(0)
+
+    # FAKE = 1
+    if os.path.exists(FAKE_DIR):
+
+        for filename in os.listdir(
+            FAKE_DIR
+        ):
+
+            if filename.endswith(
+                ".npy"
+            ):
+
+                paths.append(
+                    os.path.join(
+                        FAKE_DIR,
+                        filename
+                    )
+                )
+
+                labels.append(1)
+
+    print(
+        f"\nTotal samples: {len(paths)}"
+    )
+
+    print(
+        f"Real samples: "
+        f"{labels.count(0)}"
+    )
+
+    print(
+        f"Fake samples: "
+        f"{labels.count(1)}"
+    )
+
+    return paths, np.asarray(
+        labels,
+        dtype=np.float32
+    )
+
+
+# ============================================================
+# LOAD NUMPY FILES
+# ============================================================
+
+def load_sequences(paths):
+
+    X = []
+
+    for index, path in enumerate(
+        paths
+    ):
+
+        try:
+
+            sequence = np.load(
+                path
+            )
+
+            if sequence.shape != (
+                SEQUENCE_LENGTH,
+                IMG_SIZE,
+                IMG_SIZE,
+                CHANNELS
+            ):
+
+                print(
+                    f"Skipping {path}"
+                )
+
+                print(
+                    f"Shape: "
+                    f"{sequence.shape}"
+                )
+
+                continue
+
+            sequence = sequence.astype(
+                np.float32
+            )
+
+            sequence /= 255.0
+
+            X.append(
+                sequence
+            )
+
+        except Exception as e:
+
+            print(
+                f"Error loading {path}: {e}"
+            )
+
+        if (
+            index + 1
+        ) % 50 == 0:
+
+            print(
+                f"Loaded "
+                f"{index + 1}/"
+                f"{len(paths)}"
+            )
+
+    return np.asarray(
+        X,
+        dtype=np.float32
+    )
+
+
+# ============================================================
+# BUILD MODEL
+# ============================================================
+
+def build_model():
+
+    inputs = tf.keras.Input(
+        shape=(
+            SEQUENCE_LENGTH,
+            IMG_SIZE,
+            IMG_SIZE,
+            CHANNELS
+        )
+    )
+
+    # ================================================
+    # CNN FEATURE EXTRACTION
+    # ================================================
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.Conv2D(
+            32,
+            (3, 3),
+            activation="relu",
+            padding="same"
+        )
+    )(inputs)
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.MaxPooling2D(
+            (2, 2)
+        )
+    )(x)
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.Conv2D(
+            64,
+            (3, 3),
+            activation="relu",
+            padding="same"
+        )
+    )(x)
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.MaxPooling2D(
+            (2, 2)
+        )
+    )(x)
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.Conv2D(
+            128,
+            (3, 3),
+            activation="relu",
+            padding="same"
+        )
+    )(x)
+
+    x = tf.keras.layers.TimeDistributed(
+        tf.keras.layers.GlobalAveragePooling2D()
+    )(x)
+
+    # ================================================
+    # TEMPORAL MODEL
+    # ================================================
+
+    x = tf.keras.layers.LSTM(
+        128,
+        return_sequences=False
+    )(x)
+
+    x = tf.keras.layers.Dropout(
+        0.5
+    )(x)
+
+    x = tf.keras.layers.Dense(
+        64,
+        activation="relu"
+    )(x)
+
+    x = tf.keras.layers.Dropout(
+        0.3
+    )(x)
+
+    outputs = tf.keras.layers.Dense(
+        1,
+        activation="sigmoid"
+    )(x)
+
+    model = tf.keras.Model(
+        inputs,
+        outputs
+    )
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(
+            learning_rate=LEARNING_RATE
+        ),
+        loss="binary_crossentropy",
+        metrics=[
+            "accuracy"
+        ]
+    )
+
+    return model
+
+
+# ============================================================
+# MAIN TRAINING
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("=" * 60)
+    print("DEEPFAKE DETECTION TRAINING")
+    print("=" * 60)
+
+    # --------------------------------------------
+    # Load paths
+    # --------------------------------------------
+
+    paths, labels = load_dataset()
+
+    if len(paths) < 10:
+
+        raise ValueError(
+            "Not enough processed sequences."
+        )
+
+    # --------------------------------------------
+    # Split
+    # --------------------------------------------
+
+    (
+        train_paths,
+        test_paths,
+        train_labels,
+        test_labels
+    ) = train_test_split(
+        paths,
+        labels,
+        test_size=0.2,
+        random_state=RANDOM_STATE,
+        stratify=labels
+    )
+
+    (
+        train_paths,
+        val_paths,
+        train_labels,
+        val_labels
+    ) = train_test_split(
+        train_paths,
+        train_labels,
+        test_size=0.2,
+        random_state=RANDOM_STATE,
+        stratify=train_labels
+    )
+
+    print(
+        f"\nTraining samples: "
+        f"{len(train_paths)}"
+    )
+
+    print(
+        f"Validation samples: "
+        f"{len(val_paths)}"
+    )
+
+    print(
+        f"Test samples: "
+        f"{len(test_paths)}"
+    )
+
+    # --------------------------------------------
+    # Load arrays
+    # --------------------------------------------
+
+    print("\nLoading training data...")
+
+    X_train = load_sequences(
+        train_paths
+    )
+
+    y_train = train_labels[
+        :len(X_train)
+    ]
+
+    print("\nLoading validation data...")
+
+    X_val = load_sequences(
+        val_paths
+    )
+
+    y_val = val_labels[
+        :len(X_val)
+    ]
+
+    # --------------------------------------------
+    # Model
+    # --------------------------------------------
+
+    print("\nBuilding model...")
+
+    model = build_model()
+
+    model.summary()
+
+    # --------------------------------------------
+    # Callbacks
+    # --------------------------------------------
+
+    callbacks = [
+
+        tf.keras.callbacks.ModelCheckpoint(
+            MODEL_PATH,
+            monitor="val_accuracy",
+            save_best_only=True,
+            mode="max",
+            verbose=1
+        ),
+
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=3,
+            restore_best_weights=True,
+            verbose=1
+        ),
+
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=2,
+            min_lr=1e-7,
+            verbose=1
+        )
+    ]
+
+    # --------------------------------------------
+    # Train
+    # --------------------------------------------
+
+    print("\nStarting training...")
+
+    history = model.fit(
+
+        X_train,
+        y_train,
+
+        validation_data=(
+            X_val,
+            y_val
+        ),
+
+        epochs=EPOCHS,
+
+        batch_size=BATCH_SIZE,
+
+        callbacks=callbacks,
+
+        verbose=1
+    )
+
+    # --------------------------------------------
+    # Load best model
+    # --------------------------------------------
+
+    if os.path.exists(
+        MODEL_PATH
+    ):
+
+        model = tf.keras.models.load_model(
+            MODEL_PATH
+        )
+
+    # --------------------------------------------
+    # Test
+    # --------------------------------------------
+
+    print("\nEvaluating model...")
+
+    X_test = load_sequences(
+        test_paths
+    )
+
+    y_test = test_labels[
+        :len(X_test)
+    ]
+
+    probabilities = model.predict(
+        X_test,
+        batch_size=BATCH_SIZE,
+        verbose=1
+    ).flatten()
+
+    predictions = (
+        probabilities >= 0.5
+    ).astype(int)
+
+    # --------------------------------------------
+    # Metrics
+    # --------------------------------------------
+
+    accuracy = accuracy_score(
+        y_test,
+        predictions
+    )
+
+    precision = precision_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    recall = recall_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    f1 = f1_score(
+        y_test,
+        predictions,
+        zero_division=0
+    )
+
+    metrics = {
+
+        "accuracy": float(
+            accuracy
+        ),
+
+        "precision": float(
+            precision
+        ),
+
+        "recall": float(
+            recall
+        ),
+
+        "f1_score": float(
+            f1
+        ),
+
+        "test_samples": int(
+            len(y_test)
+        )
+    }
+
+    with open(
+        METRICS_PATH,
+        "w"
+    ) as file:
+
+        import json
+
+        json.dump(
+            metrics,
+            file,
+            indent=4
+        )
+
+    print("\n" + "=" * 60)
+    print("TRAINING COMPLETE")
+    print("=" * 60)
+
+    print(
+        f"Accuracy : {accuracy:.4f}"
+    )
+
+    print(
+        f"Precision: {precision:.4f}"
+    )
+
+    print(
+        f"Recall   : {recall:.4f}"
+    )
+
+    print(
+        f"F1 Score : {f1:.4f}"
+    )
+
+    print(
+        f"\nModel saved to:"
+    )
+
+    print(
+        MODEL_PATH
+    )
+
+    print(
+        "\nMetrics saved to:"
+    )
+
+    print(
+        METRICS_PATH
+    )
+
+    print("=" * 60)
+
+
+==================================================
+FILE: backend\requirements.txt
+==================================================
+
+tensorflow==2.20.0
+opencv-python==4.10.0.84
+numpy==2.1.3
+scikit-learn==1.6.0
+flask==3.0.3
+flask-cors==5.0.0
+scipy==1.15.2
+librosa==0.10.2
+mtcnn==0.1.1
+matplotlib==3.10.0
+pillow==10.4.0
+
+
+==================================================
+FILE: backend\Procfile
+==================================================
+
+web: gunicorn app:app
+
+
+==================================================
+FILE: backend\runtime.txt
+==================================================
+
+python-3.11.10
+
+
+==================================================
+FILE: frontend\package.json
+==================================================
+
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^13.5.0",
+    "@types/jest": "^27.5.2",
+    "@types/node": "^16.18.126",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "axios": "^1.19.0",
+    "bootstrap": "^5.3.8",
+    "react": "^19.2.8",
+    "react-bootstrap": "^2.10.10",
+    "react-circular-progressbar": "^2.2.0",
+    "react-dom": "^19.2.8",
+    "react-dropzone": "^20.1.0",
+    "react-router-dom": "^7.18.2",
+    "react-scripts": "5.0.1",
+    "typescript": "^4.9.5",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+
+
+==================================================
+FILE: frontend\tsconfig.json
+==================================================
+
+{
+  "compilerOptions": {
+    "target": "es6",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "src"
+  ]
+}
+
+
+
+==================================================
+FILE: frontend\README.md
+==================================================
+
+# Getting Started with Create React App
+
+This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+
+## Available Scripts
+
+In the project directory, you can run:
+
+### `npm start`
+
+Runs the app in the development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+
+The page will reload if you make edits.\
+You will also see any lint errors in the console.
+
+### `npm test`
+
+Launches the test runner in the interactive watch mode.\
+See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+
+### `npm run build`
+
+Builds the app for production to the `build` folder.\
+It correctly bundles React in production mode and optimizes the build for the best performance.
+
+The build is minified and the filenames include the hashes.\
+Your app is ready to be deployed!
+
+See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+
+### `npm run eject`
+
+**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
+
+If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+
+Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
+
+You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
+
+## Learn More
+
+You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+
+To learn React, check out the [React documentation](https://reactjs.org/).
+
+
+
+==================================================
+FILE: frontend\src\App.tsx
+==================================================
+
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import Navbar from './components/Navbar';
+import Footer from './components/Footer';
+import Chatbot from './components/Chatbot';
+import Home from './pages/Home';
+import About from './pages/About';
+import Upload from './pages/Upload';
+import Blogs from './pages/Blogs';
+import AddVideo from './pages/AddVideo';
+import 'bootstrap/dist/css/bootstrap.min.css';
+import './index.css';
+
+function App() {
+  return (
+    <Router>
+      <div className="d-flex flex-column min-vh-100">
+        <Navbar />
+        <main className="flex-grow-1 py-4">
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/upload" element={<Upload />} />
+            <Route path="/blogs" element={<Blogs />} />
+            <Route path="/add-video" element={<AddVideo />} />
+          </Routes>
+        </main>
+        <Footer />
+        <Chatbot />
+      </div>
+    </Router>
+  );
+}
+
+export default App;
+
+
+==================================================
+FILE: frontend\src\App.css
+==================================================
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+.app-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.main-content {
+  flex: 1;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  padding: 2rem 0;
+}
+.navbar-custom {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+.navbar-brand {
+  font-weight: bold;
+  font-size: 1.5rem;
+  color: white !important;
+}
+.nav-link {
+  color: white !important;
+  font-weight: 500;
+  margin: 0 0.5rem;
+  transition: all 0.3s;
+}
+.nav-link:hover {
+  transform: translateY(-2px);
+  text-decoration: underline;
+}
+.footer {
+  background: #2d3748;
+  color: white;
+  text-align: center;
+  padding: 1.5rem;
+  margin-top: auto;
+}
+.card-hover {
+  transition: transform 0.3s, box-shadow 0.3s;
+  cursor: pointer;
+}
+.card-hover:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+}
+.dropzone {
+  background-color: #f8f9fa;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+.dropzone:hover {
+  background-color: #e9ecef;
+  border-color: #667eea !important;
+}
+.metric-card {
+  transition: transform 0.2s;
+}
+.metric-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+.bg-gradient-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+.blog-img-placeholder {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+}
+
+
+==================================================
+FILE: frontend\src\index.tsx
+==================================================
+
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+import reportWebVitals from './reportWebVitals';
+
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// If you want to start measuring performance in your app, pass a function
+// to log results (for example: reportWebVitals(console.log))
+// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
+reportWebVitals();
+
+
+
+==================================================
+FILE: frontend\src\index.css
+==================================================
+
+/* ============================================================
+   GLOBAL VARIABLES & RESET
+   ============================================================ */
+:root {
+  --primary: #4f46e5;
+  --primary-dark: #4338ca;
+  --primary-light: #818cf8;
+  --secondary: #7c3aed;
+  --accent: #06b6d4;
+  --success: #10b981;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --gray-50: #f8fafc;
+  --gray-100: #f1f5f9;
+  --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
+  --gray-400: #94a3b8;
+  --gray-500: #64748b;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1e293b;
+  --gray-900: #0b1a33;
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --radius: 16px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 25px -3px rgba(0,0,0,0.08);
+  --shadow-xl: 0 20px 40px -5px rgba(0,0,0,0.10);
+  --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-family);
+  background: var(--gray-50);
+  color: var(--gray-900);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== TYPOGRAPHY ===== */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--gray-900);
+}
+h1 { font-size: 2.8rem; }
+h2 { font-size: 2.2rem; }
+h3 { font-size: 1.6rem; }
+.display-4 { font-size: 2.8rem; font-weight: 800; }
+.lead { font-size: 1.2rem; color: var(--gray-600); }
+
+a { color: var(--primary); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--primary-dark); }
+
+.text-muted { color: var(--gray-500) !important; }
+
+/* ===== BUTTONS ===== */
+.btn {
+  border-radius: 50px;
+  padding: 0.6rem 2rem;
+  font-weight: 600;
+  transition: all var(--transition);
+  border: none;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+}
+.btn-primary:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(79, 70, 229, 0.35);
+}
+.btn-outline-primary {
+  border: 2px solid var(--primary);
+  color: var(--primary);
+  background: transparent;
+}
+.btn-outline-primary:hover {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-3px);
+}
+.btn-success {
+  background: var(--success);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
+}
+.btn-success:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.35);
+}
+
+/* ===== CARDS ===== */
+.card {
+  border: none;
+  border-radius: var(--radius);
+  background: white;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+}
+.card:hover { box-shadow: var(--shadow-lg); }
+
+/* ===== UTILITIES ===== */
+.bg-gradient-primary {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+.text-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.shadow-soft { box-shadow: var(--shadow-sm); }
+.shadow-md { box-shadow: var(--shadow-md); }
+.shadow-lg { box-shadow: var(--shadow-lg); }
+.rounded-4 { border-radius: var(--radius); }
+.rounded-3 { border-radius: var(--radius-sm); }
+
+
+==================================================
+FILE: frontend\src\components\CameraCapture.tsx
+==================================================
+
+import React, { useRef, useState, useCallback } from 'react';
+import { Button, Alert, Spinner } from 'react-bootstrap';
+
+interface CameraCaptureProps {
+  onCapture: (videoBlob: Blob) => void;
+  isAnalyzing?: boolean;
+}
+
+const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, isAnalyzing = false }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hasPermission, setHasPermission] = useState(false);
+
+  const startCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        mediaStreamRef.current = stream;
+        setHasPermission(true);
+        setError(null);
+      }
+    } catch (err) {
+      setError('Unable to access camera. Please check permissions.');
+      console.error(err);
+    }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setHasPermission(false);
+  }, []);
+
+  const captureVideo = useCallback(() => {
+    if (!videoRef.current || !videoRef.current.srcObject) return;
+
+    const stream = videoRef.current.srcObject as MediaStream;
+    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    const chunks: BlobPart[] = [];
+
+    mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      onCapture(blob);
+    };
+
+    mediaRecorder.start();
+    setTimeout(() => {
+      mediaRecorder.stop();
+    }, 3000); // record 3 seconds
+  }, [onCapture]);
+
+  return (
+    <div className="text-center">
+      {!hasPermission ? (
+        <Button variant="primary" onClick={startCamera} className="mb-3">
+          📷 Start Camera
+        </Button>
+      ) : (
+        <div>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{ width: '100%', maxHeight: '400px', borderRadius: '12px' }}
+          />
+          <div className="mt-3">
+            <Button variant="success" onClick={captureVideo} disabled={isAnalyzing} className="me-2">
+              🎥 Capture 3s Video
+            </Button>
+            <Button variant="secondary" onClick={stopCamera}>
+              Stop Camera
+            </Button>
+          </div>
+        </div>
+      )}
+      {isAnalyzing && <Spinner animation="border" variant="primary" className="mt-3" />}
+      {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
+    </div>
+  );
+};
+
+export default CameraCapture;
+
+
+==================================================
+FILE: frontend\src\components\Chatbot.tsx
+==================================================
+
+import React, { useState, useRef, useEffect } from 'react';
+import { Button, Card, Form, InputGroup, Spinner } from 'react-bootstrap';
+import axios from 'axios';
+
+interface Message {
+  text: string;
+  sender: 'user' | 'bot';
+  source?: string;
+}
+
+const Chatbot: React.FC = () => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([
+    { text: "Hi! Ask me anything about deepfakes, detection, or ethics.", sender: 'bot' }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg: Message = { text: input, sender: 'user' };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setLoading(true);
+
+    try {
+      const response = await axios.post('http://localhost:5000/chat', { query: input });
+      const botReply = response.data.response || "I'm not sure. Please ask something else.";
+      const source = response.data.source || '';
+      setMessages(prev => [...prev, { text: botReply, sender: 'bot', source }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { text: "Sorry, I'm having trouble right now. Please try again.", sender: 'bot' }]);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <>
+      <Button
+        variant="primary"
+        className="rounded-circle position-fixed"
+        style={{ bottom: '20px', right: '20px', zIndex: 999, width: '60px', height: '60px' }}
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        {isOpen ? <i className="bi bi-x-lg"></i> : <i className="bi bi-chat-dots"></i>}
+      </Button>
+
+      {isOpen && (
+        <Card
+          className="shadow-lg position-fixed"
+          style={{ bottom: '100px', right: '20px', zIndex: 999, width: '380px', maxHeight: '550px' }}
+        >
+          <Card.Header className="bg-primary text-white d-flex justify-content-between align-items-center">
+            <span><i className="bi bi-robot me-2"></i>Deepfake Assistant</span>
+            <small className="text-light">Powered by AI</small>
+          </Card.Header>
+          <Card.Body style={{ overflowY: 'auto', maxHeight: '380px' }}>
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`d-flex ${msg.sender === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
+                <div
+                  className={`p-2 rounded-3 ${msg.sender === 'user' ? 'bg-primary text-white' : 'bg-light border'}`}
+                  style={{ maxWidth: '80%' }}
+                >
+                  {msg.text}
+                  {msg.source && msg.source === 'ai' && (
+                    <div className="mt-1"><small className="text-muted fst-italic">AI‑generated</small></div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="d-flex justify-content-start mb-2">
+                <div className="p-2 bg-light border rounded-3">
+                  <Spinner animation="grow" size="sm" />
+                  <Spinner animation="grow" size="sm" className="ms-1" />
+                  <Spinner animation="grow" size="sm" className="ms-1" />
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </Card.Body>
+          <Card.Footer>
+            <InputGroup>
+              <Form.Control
+                type="text"
+                placeholder="Ask about deepfakes..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                disabled={loading}
+              />
+              <Button variant="primary" onClick={handleSend} disabled={loading}>
+                {loading ? <Spinner animation="border" size="sm" /> : <i className="bi bi-send"></i>}
+              </Button>
+            </InputGroup>
+          </Card.Footer>
+        </Card>
+      )}
+    </>
+  );
+};
+
+export default Chatbot;
+
+
+==================================================
+FILE: frontend\src\components\Chatbot.css
+==================================================
+
+/* ===== CHATBOT ===== */
+.chatbot-toggle {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 999;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  border: none;
+  color: white;
+  font-size: 1.8rem;
+  box-shadow: 0 8px 24px rgba(79, 70, 229, 0.3);
+  transition: all var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chatbot-toggle:hover {
+  transform: scale(1.05);
+  box-shadow: 0 12px 32px rgba(79, 70, 229, 0.4);
+}
+
+.chatbot-window {
+  position: fixed;
+  bottom: 100px;
+  right: 20px;
+  z-index: 999;
+  width: 380px;
+  max-height: 550px;
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chatbot-window .header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 1rem 1.2rem;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.chatbot-window .header .close-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+.chatbot-window .messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.chatbot-window .messages .bot {
+  align-self: flex-start;
+  background: var(--gray-100);
+  padding: 0.6rem 1rem;
+  border-radius: 12px 12px 12px 4px;
+  max-width: 80%;
+}
+.chatbot-window .messages .user {
+  align-self: flex-end;
+  background: var(--primary);
+  color: white;
+  padding: 0.6rem 1rem;
+  border-radius: 12px 12px 4px 12px;
+  max-width: 80%;
+}
+.chatbot-window .input-area {
+  padding: 0.8rem 1rem;
+  border-top: 1px solid var(--gray-200);
+  display: flex;
+  gap: 0.5rem;
+}
+.chatbot-window .input-area input {
+  flex: 1;
+  border: 1px solid var(--gray-200);
+  border-radius: 50px;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border var(--transition);
+}
+.chatbot-window .input-area input:focus { border-color: var(--primary); }
+.chatbot-window .input-area button {
+  border-radius: 50px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 0 1.2rem;
+  font-weight: 600;
+  transition: all var(--transition);
+}
+.chatbot-window .input-area button:hover {
+  background: var(--primary-dark);
+  transform: translateY(-2px);
+}
+
+
+==================================================
+FILE: frontend\src\components\Footer.tsx
+==================================================
+
+import React from 'react';
+
+const Footer: React.FC = () => {
+  return (
+    <footer className="footer mt-auto">
+      <div className="container text-center">
+        <p className="mb-1">&copy; 2025 Deepfake Detector | AI for Truth & Authenticity</p>
+        <small>
+          Built with <i className="bi bi-heart-fill text-danger"></i> at MIT Manipal
+        </small>
+      </div>
+    </footer>
+  );
+};
+
+export default Footer;
+
+
+==================================================
+FILE: frontend\src\components\Footer.css
+==================================================
+
+/* ===== FOOTER ===== */
+.footer {
+  background: var(--gray-900);
+  color: rgba(255,255,255,0.7);
+  padding: 2.5rem 0;
+  margin-top: 4rem;
+}
+.footer a {
+  color: rgba(255,255,255,0.5);
+  transition: color var(--transition);
+}
+.footer a:hover { color: white; }
+.footer .social-icons { display: flex; justify-content: center; gap: 1rem; margin-top: 1rem; }
+.footer .social-icons a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.6);
+  transition: all var(--transition);
+}
+.footer .social-icons a:hover {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-4px);
+}
+
+
+==================================================
+FILE: frontend\src\components\Navbar.tsx
+==================================================
+
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { Navbar as BootstrapNavbar, Nav, Container } from 'react-bootstrap';
+import './Navbar.css'
+const Navbar: React.FC = () => {
+  return (
+    <BootstrapNavbar expand="lg" className="navbar-custom" variant="dark">
+      <Container>
+        <BootstrapNavbar.Brand as={Link} to="/">
+          <i className="bi bi-shield-check me-2"></i>Deepfake Detector
+        </BootstrapNavbar.Brand>
+        <BootstrapNavbar.Toggle aria-controls="basic-navbar-nav" />
+        <BootstrapNavbar.Collapse id="basic-navbar-nav">
+          <Nav className="ms-auto">
+            <Nav.Link as={Link} to="/"><i className="bi bi-house me-1"></i>Home</Nav.Link>
+            <Nav.Link as={Link} to="/upload"><i className="bi bi-upload me-1"></i>Upload</Nav.Link>
+            <Nav.Link as={Link} to="/blogs"><i className="bi bi-newspaper me-1"></i>Blogs</Nav.Link>
+            <Nav.Link as={Link} to="/add-video"><i className="bi bi-plus-circle me-1"></i>Add Video</Nav.Link>
+            <Nav.Link as={Link} to="/about"><i className="bi bi-people me-1"></i>About</Nav.Link>
+          </Nav>
+        </BootstrapNavbar.Collapse>
+      </Container>
+    </BootstrapNavbar>
+  );
+};
+
+export default Navbar;
+
+
+==================================================
+FILE: frontend\src\components\Navbar.css
+==================================================
+
+/* ===== NAVBAR ===== */
+.navbar-custom {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  box-shadow: 0 4px 20px rgba(79, 70, 229, 0.25);
+  padding: 0.8rem 0;
+}
+.navbar-custom .navbar-brand {
+  font-weight: 700;
+  font-size: 1.5rem;
+  color: white !important;
+}
+.navbar-custom .navbar-brand i { margin-right: 0.6rem; }
+.navbar-custom .nav-link {
+  color: rgba(255,255,255,0.85) !important;
+  font-weight: 500;
+  padding: 0.5rem 1.2rem !important;
+  border-radius: 50px;
+  transition: all var(--transition);
+}
+.navbar-custom .nav-link:hover {
+  background: rgba(255,255,255,0.15);
+  color: white !important;
+  transform: translateY(-2px);
+}
+.navbar-custom .nav-link i { margin-right: 0.4rem; }
+.navbar-custom .navbar-toggler {
+  border: none;
+  color: white;
+}
+.navbar-custom .navbar-toggler:focus { box-shadow: none; }
+
+
+==================================================
+FILE: frontend\src\pages\About.tsx
+==================================================
+
+import React, { useState } from 'react';
+import { Container, Row, Col, Card, Image } from 'react-bootstrap';
+import './About.css'
+const About: React.FC = () => {
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+
+  const developers = [
+    {
+      id: 'mohan',
+      name: "Mohan Sravanth Varma",
+      role: "Full Stack Developer & AI Engineer",
+      email: "mohansravanthvarma123@gmail.com",
+      photo: "/mohan.jpeg",
+      description: "Designed and built the entire deepfake detection system, including the CNN+LSTM model, Flask backend API, and React frontend with all features.",
+      github: "https://github.com/mohansravanth",
+      linkedin: "https://linkedin.com/in/mohansravanth"
+    },
+    {
+      id: 'rahul',
+      name: "Rahul Sai",
+      role: "Backend & AI Engineer",
+      email: "rahulsai9866@gmail.com",
+      photo: "/rahul.jpeg",
+      description: "Assisted with model optimization, dataset preprocessing, and integration of the image and video analysis pipelines.",
+      github: "https://github.com/rahulsai",
+      linkedin: "https://linkedin.com/in/rahulsai"
+    },
+    {
+      id: 'vedanth',
+      name: "Vedanth Reddy",
+      role: "Frontend & UI/UX Designer",
+      email: "",
+      photo: "/vedanth.jpeg",
+      description: "Contributed to UI design, frontend components, and user experience improvements across the platform.",
+      github: "https://github.com/vedanthreddy",
+      linkedin: "https://linkedin.com/in/vedanthreddy"
+    }
+  ];
+
+  const getAvatarUrl = (name: string) => {
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&size=150&background=4f46e5&color=fff&bold=true`;
+  };
+
+  const handleImageError = (id: string) => {
+    setImageErrors(prev => ({ ...prev, [id]: true }));
+  };
+
+  const getImageSrc = (dev: typeof developers[0]) => {
+    if (imageErrors[dev.id]) {
+      return getAvatarUrl(dev.name);
+    }
+    return dev.photo;
+  };
+
+  return (
+    <Container className="py-5">
+      <div className="text-center mb-5">
+        <span className="badge bg-primary bg-gradient px-4 py-2 mb-3">MEET THE TEAM</span>
+        <h1 className="display-4 fw-bold">About <span className="text-primary">Us</span></h1>
+        <p className="text-muted fs-5">The passionate minds behind the Deepfake Detector</p>
+      </div>
+
+      <Row className="g-4 justify-content-center">
+        {developers.map((dev) => (
+          <Col md={4} key={dev.id}>
+            <Card className="h-100 shadow-sm border-0 text-center card-hover">
+              <Card.Body>
+                <Image
+                  src={getImageSrc(dev)}
+                  width="160"
+                  height="160"
+                  className="rounded-3 mb-3 border border-2"
+                  style={{ objectFit: 'cover' }}
+                  alt={dev.name}
+                />
+                <h5 className="fw-bold">{dev.name}</h5>
+                <p className="text-primary fw-semibold">{dev.role}</p>
+                {dev.email && (
+                  <p className="small">
+                    <a href={`mailto:${dev.email}`} className="text-decoration-none">
+                      <i className="bi bi-envelope me-1"></i>{dev.email}
+                    </a>
+                  </p>
+                )}
+                <div className="d-flex justify-content-center gap-2 mb-2">
+                  {dev.github && (
+                    <a href={dev.github} target="_blank" rel="noopener noreferrer" className="btn btn-outline-secondary btn-sm">
+                      <i className="bi bi-github"></i>
+                    </a>
+                  )}
+                  {dev.linkedin && (
+                    <a href={dev.linkedin} target="_blank" rel="noopener noreferrer" className="btn btn-outline-primary btn-sm">
+                      <i className="bi bi-linkedin"></i>
+                    </a>
+                  )}
+                </div>
+                <p className="text-muted small">{dev.description}</p>
+              </Card.Body>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      <Row className="mt-5">
+        <Col>
+          <Card className="bg-primary bg-gradient text-white border-0 p-4 text-center">
+            <h4 className="fw-bold">Project Overview</h4>
+            <p className="mb-3">
+              This project was developed as a minor project at <strong>MIT Manipal</strong>.
+              The system uses a <strong>CNN+LSTM architecture</strong> trained on the SDFVD 2.0 dataset
+              to detect deepfake videos with high accuracy.
+            </p>
+            <div className="d-flex flex-wrap justify-content-center gap-2">
+              <span className="badge bg-light text-dark">TensorFlow</span>
+              <span className="badge bg-light text-dark">Flask</span>
+              <span className="badge bg-light text-dark">React</span>
+              <span className="badge bg-light text-dark">TypeScript</span>
+              <span className="badge bg-light text-dark">Bootstrap</span>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+    </Container>
+  );
+};
+
+export default About;
+
+
+==================================================
+FILE: frontend\src\pages\About.css
+==================================================
+
+/* ===== Hero Section ===== */
+.about-hero {
+  padding: 1rem 0;
+}
+
+.hero-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 0.4rem 1.2rem;
+  border-radius: 50px;
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+}
+
+.about-title {
+  font-weight: 800;
+  color: #2d3748;
+}
+
+.about-title .highlight {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.about-subtitle {
+  color: #718096;
+  font-size: 1.15rem;
+}
+
+/* ===== Team Cards ===== */
+.team-card {
+  border: none;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(102, 126, 234, 0.12);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  overflow: hidden;
+  padding: 1.5rem 1.5rem 0 1.5rem;
+}
+
+.team-card:hover {
+  transform: translateY(-10px);
+  box-shadow: 0 20px 60px rgba(102, 126, 234, 0.25);
+}
+
+/* Card Image Wrapper */
+.card-image-wrapper {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 0.5rem;
+}
+
+.team-photo {
+  border: 4px solid #e9ecef;
+  object-fit: cover;
+  transition: all 0.4s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.team-card:hover .team-photo {
+  border-color: #667eea;
+  transform: scale(1.02);
+  box-shadow: 0 12px 32px rgba(102, 126, 234, 0.25);
+}
+
+/* Social Icons */
+.card-social-icons {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%) translateY(50%);
+  display: flex;
+  gap: 0.5rem;
+  opacity: 0;
+  transition: all 0.4s ease;
+}
+
+.team-card:hover .card-social-icons {
+  opacity: 1;
+}
+
+.social-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: white;
+  color: #667eea;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  font-size: 1rem;
+}
+
+.social-icon:hover {
+  background: #667eea;
+  color: white;
+  transform: translateY(-3px);
+  box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3);
+}
+
+/* Card Text Styles */
+.team-name {
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #2d3748;
+  margin-top: 1rem;
+}
+
+.team-role {
+  font-size: 0.85rem;
+  color: #667eea;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.team-email {
+  font-size: 0.8rem;
+  color: #718096;
+  margin-bottom: 0.75rem;
+}
+
+.team-email i {
+  margin-right: 0.4rem;
+  color: #667eea;
+}
+
+.team-email a {
+  color: #718096;
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.team-email a:hover {
+  color: #667eea;
+}
+
+.team-description {
+  font-size: 0.9rem;
+  color: #4a5568;
+  line-height: 1.6;
+  margin-top: 0.5rem;
+}
+
+/* ===== Project Overview Card ===== */
+.project-overview-card {
+  border: none;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 2.5rem;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(102, 126, 234, 0.35);
+  transition: transform 0.3s ease;
+}
+
+.project-overview-card:hover {
+  transform: scale(1.01);
+}
+
+.overview-content {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.overview-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.overview-title {
+  font-weight: 700;
+  margin-bottom: 1rem;
+  color: white;
+}
+
+.overview-text {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  opacity: 0.95;
+  margin-bottom: 1.5rem;
+}
+
+.overview-text strong {
+  color: white;
+  font-weight: 700;
+}
+
+.tech-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.tech-badge {
+  background: rgba(255, 255, 255, 0.18);
+  padding: 0.4rem 1.2rem;
+  border-radius: 50px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(4px);
+  transition: all 0.3s ease;
+  color: white;
+}
+
+.tech-badge:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+/* ===== Responsive Design ===== */
+@media (max-width: 768px) {
+  .about-title {
+    font-size: 2.2rem;
+  }
+
+  .team-card {
+    padding: 1rem 1rem 0 1rem;
+  }
+
+  .team-photo {
+    width: 130px;
+    height: 130px;
+  }
+
+  .project-overview-card {
+    padding: 1.5rem;
+  }
+
+  .overview-text {
+    font-size: 0.95rem;
+  }
+
+  .tech-stack {
+    gap: 0.4rem;
+  }
+
+  .tech-badge {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.8rem;
+  }
+}
+
+@media (max-width: 576px) {
+  .about-hero {
+    padding: 0.5rem 0;
+  }
+
+  .about-title {
+    font-size: 1.8rem;
+  }
+
+  .team-photo {
+    width: 110px;
+    height: 110px;
+  }
+
+  .card-social-icons {
+    opacity: 1;
+    bottom: -10px;
+  }
+
+  .team-card:hover .card-social-icons {
+    opacity: 1;
+  }
+}
+
+
+==================================================
+FILE: frontend\src\pages\AddVideo.tsx
+==================================================
+
+import React, { useState, useRef } from 'react';
+import axios from 'axios';
+import { Container, Row, Col, Card, Form, Button, Alert, Spinner } from 'react-bootstrap';
+import './AddVideo.css'
+const AddVideo: React.FC = () => {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [detectionResult, setDetectionResult] = useState<{ is_fake: boolean; confidence: number } | null>(null);
+  const [needsConfirmation, setNeedsConfirmation] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file && file.type.startsWith('video/')) {
+      setSelectedFile(file);
+      setMessage(null);
+      setError(null);
+      setDetectionResult(null);
+      setNeedsConfirmation(false);
+    } else {
+      setError('Please upload a valid video file (MP4, AVI, MOV)');
+      event.target.value = '';
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!selectedFile) {
+      setError('Please select a video');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('video', selectedFile);
+    formData.append('confirmed', 'false');
+
+    setUploading(true);
+    setMessage(null);
+    setError(null);
+    setNeedsConfirmation(false);
+
+    try {
+      const response = await axios.post('http://localhost:5000/add_video_auto', formData);
+      if (response.data.needs_confirmation) {
+        setNeedsConfirmation(true);
+        setDetectionResult({
+          is_fake: response.data.is_fake,
+          confidence: response.data.confidence
+        });
+      } else {
+        setMessage(response.data.message);
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Analysis failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!selectedFile) return;
+    const formData = new FormData();
+    formData.append('video', selectedFile);
+    formData.append('confirmed', 'true');
+
+    setUploading(true);
+    setMessage(null);
+    setError(null);
+
+    try {
+      const response = await axios.post('http://localhost:5000/add_video_auto', formData);
+      setMessage(response.data.message);
+      setSelectedFile(null);
+      setDetectionResult(null);
+      setNeedsConfirmation(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDropZoneClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  return (
+    <Container className="py-5">
+      <Row className="justify-content-center">
+        <Col lg={8}>
+          <Card className="shadow-lg border-0 rounded-4">
+            <div className="bg-gradient-primary p-4 text-white text-center">
+              <h1 className="display-5 fw-bold">📤 Add Video to Dataset</h1>
+              <p className="lead mb-0">Upload a video – our AI will detect if it's real or fake, then you confirm.</p>
+            </div>
+            <Card.Body className="p-4">
+              <Form>
+                <div
+                  className="dropzone p-5 text-center rounded-4 border-2 border-dashed border-secondary"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={handleDropZoneClick}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const file = e.dataTransfer.files[0];
+                    if (file && file.type.startsWith('video/')) {
+                      setSelectedFile(file);
+                      setMessage(null);
+                      setError(null);
+                      setDetectionResult(null);
+                      setNeedsConfirmation(false);
+                    } else {
+                      setError('Please upload a valid video file (MP4, AVI, MOV)');
+                    }
+                  }}
+                >
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="video/*"
+                    onChange={handleFileChange}
+                    style={{ display: 'none' }}
+                  />
+                  <i className="bi bi-cloud-upload fs-1"></i>
+                  <p className="mt-2 mb-0">Drag & drop a video, or click to select</p>
+                  <small className="text-muted">MP4, AVI, MOV</small>
+                </div>
+                {selectedFile && (
+                  <div className="mt-3">
+                    <p><strong>Selected:</strong> {selectedFile.name}</p>
+                  </div>
+                )}
+                
+                {!needsConfirmation && !message && (
+                  <Button
+                    variant="primary"
+                    onClick={handleAnalyze}
+                    className="mt-3 w-100"
+                    disabled={uploading || !selectedFile}
+                  >
+                    {uploading ? <Spinner animation="border" size="sm" /> : '🔍 Analyze & Detect'}
+                  </Button>
+                )}
+
+                {needsConfirmation && detectionResult && (
+                  <div className="mt-3 p-3 rounded-3 bg-light">
+                    <Alert variant={detectionResult.is_fake ? 'danger' : 'success'}>
+                      <h5>
+                        {detectionResult.is_fake 
+                          ? '🚨 AI detects this as FAKE' 
+                          : '✅ AI detects this as REAL'}
+                      </h5>
+                      <p>Confidence: {(detectionResult.confidence * 100).toFixed(2)}%</p>
+                      <p className="mb-0">Do you want to save this video as <strong>{detectionResult.is_fake ? 'FAKE' : 'REAL'}</strong>?</p>
+                    </Alert>
+                    <div className="d-flex gap-2">
+                      <Button variant="success" onClick={handleConfirm} disabled={uploading} className="flex-1">
+                        {uploading ? <Spinner animation="border" size="sm" /> : '✅ Confirm & Save'}
+                      </Button>
+                      <Button variant="secondary" onClick={() => {
+                        setNeedsConfirmation(false);
+                        setDetectionResult(null);
+                        setSelectedFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }} className="flex-1">
+                        ❌ Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {message && <Alert variant="success" className="mt-3">{message}</Alert>}
+                {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
+              </Form>
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+    </Container>
+  );
+};
+
+export default AddVideo;
+
+
+==================================================
+FILE: frontend\src\pages\AddVideo.css
+==================================================
+
+/* ===== ADD VIDEO PAGE ===== */
+.addvideo-header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 2rem 1.5rem;
+  border-radius: var(--radius) var(--radius) 0 0;
+  text-align: center;
+}
+.addvideo-header h1 { color: white; font-weight: 700; }
+.addvideo-header p { opacity: 0.9; margin-bottom: 0; }
+
+.addvideo-dropzone {
+  background: white;
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius);
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.addvideo-dropzone:hover {
+  border-color: var(--primary);
+  background: var(--gray-50);
+}
+.addvideo-dropzone .icon { font-size: 3rem; color: var(--gray-400); }
+.addvideo-dropzone p { margin: 0.5rem 0 0; }
+.addvideo-dropzone small { color: var(--gray-500); }
+
+.confirmation-box {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--gray-50);
+  border-radius: var(--radius);
+  border-left: 4px solid var(--primary);
+}
+.confirmation-box .btn-group { display: flex; gap: 0.5rem; margin-top: 1rem; }
+.confirmation-box .btn-group .btn { flex: 1; }
+
+
+==================================================
+FILE: frontend\src\pages\Blogs.tsx
+==================================================
+
+import React, { useState } from 'react';
+import { Container, Row, Col, Card, Button, Modal } from 'react-bootstrap';
+import './Blogs.css'
+const blogsData = [
+  {
+    id: 1,
+    title: "What Are Deepfakes and Why Do They Matter?",
+    date: "April 15, 2025",
+    summary: "Deepfakes are AI-generated synthetic media that can swap faces, manipulate speech, and create realistic but fake videos. Learn how they work and why detecting them is crucial.",
+    icon: "bi-film",
+    readTime: "5 min read",
+    fullContent: "Deepfakes are AI-generated synthetic media that can swap faces, manipulate speech, and create realistic but fake videos. They use generative adversarial networks (GANs) to produce highly convincing content. The rise of deepfakes poses significant threats to misinformation, identity theft, and personal privacy. Detection techniques rely on analyzing unnatural blinking, inconsistent lighting, and artifacts around face boundaries. Understanding these technologies is the first step in combating their misuse."
+  },
+  {
+    id: 2,
+    title: "How Our Deepfake Detection Model Works",
+    date: "April 10, 2025",
+    summary: "We use a CNN+LSTM architecture trained on thousands of real and fake videos. The CNN extracts spatial features and the LSTM detects temporal inconsistencies.",
+    icon: "bi-cpu",
+    readTime: "7 min read",
+    fullContent: "Our model combines Convolutional Neural Networks (CNN) for spatial feature extraction and Long Short-Term Memory (LSTM) for temporal analysis. The CNN processes individual frames, capturing details like eyes, mouth, and skin texture. The LSTM then analyzes how these features change across frames, identifying unnatural movements that reveal deepfake manipulation. This dual approach allows the model to achieve high accuracy on diverse datasets."
+  },
+  {
+    id: 3,
+    title: "The Ethics of Deepfake Technology",
+    date: "April 5, 2025",
+    summary: "While deepfakes can be creative, they also pose risks for misinformation, identity theft, and fraud. We discuss ethical guidelines and how to stay safe.",
+    icon: "bi-shield-check",
+    readTime: "6 min read",
+    fullContent: "Deepfakes raise critical ethical questions: who is responsible for content authenticity? How can we balance creative expression with protection against harm? Some guidelines include mandatory watermarking of AI-generated content, education on media literacy, and regulatory frameworks to penalize malicious use. Staying vigilant and critical of digital content is essential."
+  },
+  {
+    id: 4,
+    title: "Real‑World Deepfake Incidents",
+    date: "March 28, 2025",
+    summary: "From celebrity impersonations to political disinformation, deepfakes have already caused harm. We highlight major cases and what we can learn from them.",
+    icon: "bi-globe",
+    readTime: "8 min read",
+    fullContent: "Deepfakes have been used to create non‑consensual pornography, impersonate politicians, and spread fake news. Notable incidents include a deepfake video of a European politician that sparked diplomatic tensions, and fabricated speeches used to manipulate stock markets. These cases underline the urgency of robust detection methods and public awareness."
+  },
+  {
+    id: 5,
+    title: "Future of AI Media Forensics",
+    date: "March 20, 2025",
+    summary: "As deepfakes get better, detection methods must evolve. Explore emerging techniques like frequency domain analysis, GAN fingerprints, and blockchain verification.",
+    icon: "bi-rocket",
+    readTime: "10 min read",
+    fullContent: "The future of deepfake detection lies in multi‑modal analysis, combining visual, audio, and metadata cues. Frequency domain analysis can spot unnatural high‑frequency patterns, while GAN fingerprints reveal unique artifacts left by generative models. Blockchain‑based provenance tracking offers a way to verify content origin. This arms race in AI forensics continues."
+  }
+];
+
+const Blogs: React.FC = () => {
+  const [showModal, setShowModal] = useState(false);
+  const [selectedBlog, setSelectedBlog] = useState<any>(null);
+
+  const handleReadMore = (blog: any) => {
+    setSelectedBlog(blog);
+    setShowModal(true);
+  };
+
+  return (
+    <Container className="py-5">
+      <Row className="text-center mb-5">
+        <Col>
+          <h1 className="display-4 fw-bold">Deepfake Insights</h1>
+          <p className="lead text-muted">Stay informed about the latest in deepfake technology and detection.</p>
+        </Col>
+      </Row>
+      <Row className="g-4">
+        {blogsData.map((blog) => (
+          <Col md={6} lg={4} key={blog.id}>
+            <Card className="h-100 shadow-sm border-0 card-hover">
+              <div className="blog-img-placeholder">
+                <i className={`bi ${blog.icon}`} style={{ fontSize: '3rem' }}></i>
+              </div>
+              <Card.Body>
+                <Card.Title className="fw-bold">{blog.title}</Card.Title>
+                <div className="text-muted small mb-2">{blog.date} • {blog.readTime}</div>
+                <Card.Text>{blog.summary}</Card.Text>
+                <Button
+                  variant="outline-primary"
+                  size="sm"
+                  className="rounded-pill"
+                  onClick={() => handleReadMore(blog)}
+                >
+                  Read More <i className="bi bi-arrow-right ms-1"></i>
+                </Button>
+              </Card.Body>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>{selectedBlog?.title}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="text-muted small mb-3">{selectedBlog?.date} • {selectedBlog?.readTime}</div>
+          <p>{selectedBlog?.fullContent}</p>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowModal(false)}>Close</Button>
+        </Modal.Footer>
+      </Modal>
+    </Container>
+  );
+};
+
+export default Blogs;
+
+
+==================================================
+FILE: frontend\src\pages\Blogs.css
+==================================================
+
+/* ===== BLOGS PAGE ===== */
+.blogs-header {
+  text-align: center;
+  padding: 1rem 0 2rem;
+}
+.blogs-header h1 { font-weight: 800; }
+.blogs-header p { color: var(--gray-500); font-size: 1.1rem; }
+
+.blog-card {
+  background: white;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+  height: 100%;
+}
+.blog-card:hover {
+  transform: translateY(-8px);
+  box-shadow: var(--shadow-xl);
+}
+.blog-card .card-img-top {
+  height: 180px;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+  color: white;
+}
+.blog-card .card-body { padding: 1.5rem; }
+.blog-card .card-title { font-weight: 700; font-size: 1.1rem; }
+.blog-card .card-meta { font-size: 0.8rem; color: var(--gray-500); }
+.blog-card .card-text { font-size: 0.95rem; color: var(--gray-600); }
+
+.modal-blog .modal-content {
+  border-radius: var(--radius);
+  border: none;
+  box-shadow: var(--shadow-xl);
+}
+.modal-blog .modal-header { border-bottom: 1px solid var(--gray-200); }
+.modal-blog .modal-footer { border-top: 1px solid var(--gray-200); }
+
+
+==================================================
+FILE: frontend\src\pages\Camera.tsx
+==================================================
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { Container, Row, Col, Card, Alert } from 'react-bootstrap';
+import CameraCapture from '../components/CameraCapture';
+import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
+import 'react-circular-progressbar/dist/styles.css';
+
+interface PredictionResult {
+  is_fake: boolean;
+  confidence: number;
+  raw_score: number;
+}
+
+const Camera: React.FC = () => {
+  const [result, setResult] = useState<PredictionResult | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCapture = async (videoBlob: Blob) => {
+    const formData = new FormData();
+    formData.append('video', videoBlob, 'camera-capture.webm');
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const response = await axios.post<PredictionResult>('http://localhost:5000/predict', formData);
+      setResult(response.data);
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Analysis failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confidencePercent = result ? result.confidence * 100 : 0;
+  const confidenceColor = result ? (result.is_fake ? '#dc3545' : '#28a745') : '#6c757d';
+
+  return (
+    <Container className="py-5">
+      <Row className="justify-content-center">
+        <Col lg={8}>
+          <Card className="shadow-lg border-0 rounded-4">
+            <div className="bg-gradient-primary p-4 text-white text-center">
+              <h2 className="fw-bold">📸 Live Camera Analysis</h2>
+              <p>Allow camera access, record a short video (3s), and check for deepfakes instantly.</p>
+            </div>
+            <Card.Body className="p-4">
+              <CameraCapture onCapture={handleCapture} isAnalyzing={loading} />
+              {result && (
+                <div className="mt-4 p-4 rounded-4 bg-light text-center">
+                  <div style={{ width: 150, height: 150, margin: '0 auto' }}>
+                    <CircularProgressbar value={confidencePercent} text={`${Math.round(confidencePercent)}%`} styles={buildStyles({ textSize: '20px', pathColor: confidenceColor, textColor: confidenceColor, trailColor: '#e9ecef' })} />
+                  </div>
+                  <h2 className={result.is_fake ? 'text-danger' : 'text-success'}>{result.is_fake ? '🚨 DEEPFAKE DETECTED' : '✅ VIDEO APPEARS REAL'}</h2>
+                  <p className="lead">Confidence: {confidencePercent.toFixed(2)}%</p>
+                </div>
+              )}
+              {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+    </Container>
+  );
+};
+
+export default Camera;
+
+
+==================================================
+FILE: frontend\src\pages\Home.tsx
+==================================================
+
+import React from 'react';
+import { Container, Row, Col, Card, Button } from 'react-bootstrap';
+import { useNavigate } from 'react-router-dom';
+import './Home.css'
+const Home: React.FC = () => {
+  const navigate = useNavigate();
+
+  const features = [
+    { id: 1, title: "Upload & Analyze", desc: "Upload videos or images to detect deepfakes with confidence scores.", icon: "bi-upload", path: "/upload" },
+    { id: 2, title: "Frame Analysis", desc: "See which frames are manipulated with frame‑by‑frame heatmaps.", icon: "bi-grid-3x3-gap", path: "/upload" },
+    { id: 3, title: "Add to Dataset", desc: "Upload verified videos to expand the dataset (auto‑detected).", icon: "bi-plus-circle", path: "/add-video" },
+  ];
+
+  const blogPosts = [
+    { id: 1, title: "The Rise of Deepfakes", excerpt: "Deepfakes are becoming more realistic. Learn how they work and why they matter.", date: "May 10, 2025" },
+    { id: 2, title: "How to Spot a Deepfake", excerpt: "Tips and tricks to identify AI-generated videos.", date: "May 5, 2025" },
+    { id: 3, title: "The Future of AI Forensics", excerpt: "How researchers are fighting back against synthetic media.", date: "April 28, 2025" },
+  ];
+
+  return (
+    <Container className="py-5">
+      <Row className="justify-content-center text-center mb-5">
+        <Col lg={8}>
+          <span className="badge bg-primary bg-gradient px-4 py-2 mb-3">AI FOR AUTHENTICITY</span>
+          <h1 className="display-4 fw-bold">Welcome to <span className="text-primary">Deepfake Detector</span></h1>
+          <p className="lead text-muted">Empowering you to distinguish real media from AI‑generated fakes using state‑of‑the‑art deep learning.</p>
+          <Button variant="primary" size="lg" className="mt-3 px-5 rounded-pill" onClick={() => navigate('/upload')}>
+            Get Started <i className="bi bi-arrow-right ms-2"></i>
+          </Button>
+        </Col>
+      </Row>
+
+      <Row className="mt-5 g-4">
+        {features.map(feature => (
+          <Col md={4} key={feature.id}>
+            <Card className="h-100 shadow-sm border-0 card-hover" onClick={() => navigate(feature.path)} style={{ cursor: 'pointer' }}>
+              <Card.Body className="text-center">
+                <div className="display-1 text-primary"><i className={`bi ${feature.icon}`}></i></div>
+                <Card.Title className="mt-3">{feature.title}</Card.Title>
+                <Card.Text className="text-muted">{feature.desc}</Card.Text>
+              </Card.Body>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      <Row className="mt-5">
+        <Col>
+          <h2 className="text-center mb-4">Latest Blog Posts</h2>
+        </Col>
+      </Row>
+      <Row className="g-4">
+        {blogPosts.map(post => (
+          <Col md={4} key={post.id}>
+            <Card className="h-100 shadow-sm border-0 card-hover">
+              <Card.Body>
+                <Card.Title className="fw-bold">{post.title}</Card.Title>
+                <div className="text-muted small mb-2">{post.date}</div>
+                <Card.Text>{post.excerpt}</Card.Text>
+                <Button variant="outline-primary" size="sm" className="rounded-pill" onClick={() => navigate('/blogs')}>
+                  Read More <i className="bi bi-arrow-right ms-1"></i>
+                </Button>
+              </Card.Body>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      <Row className="mt-5 text-center">
+        <Col>
+          <Card className="bg-gradient-primary text-white border-0 p-4">
+            <h3>Ready to test a video?</h3>
+            <p>Upload a video or image to see our AI in action.</p>
+            <Button variant="light" className="mt-2 rounded-pill w-50 mx-auto" onClick={() => navigate('/upload')}>
+              Go to Upload <i className="bi bi-arrow-right ms-2"></i>
+            </Button>
+          </Card>
+        </Col>
+      </Row>
+    </Container>
+  );
+};
+
+export default Home;
+
+
+==================================================
+FILE: frontend\src\pages\Home.css
+==================================================
+
+/* ===== HOME PAGE ===== */
+.home-hero {
+  text-align: center;
+  padding: 2rem 0 1rem 0;
+}
+.home-hero .badge-hero {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 0.4rem 1.2rem;
+  border-radius: 50px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  display: inline-block;
+  margin-bottom: 1rem;
+}
+.home-hero h1 {
+  font-size: 3.2rem;
+  font-weight: 800;
+}
+.home-hero .subtitle {
+  font-size: 1.2rem;
+  color: var(--gray-600);
+  max-width: 600px;
+  margin: 0 auto;
+}
+.feature-card {
+  text-align: center;
+  padding: 2rem 1.5rem;
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+  cursor: pointer;
+  height: 100%;
+}
+.feature-card:hover {
+  transform: translateY(-8px);
+  box-shadow: var(--shadow-xl);
+}
+.feature-card .icon {
+  font-size: 3rem;
+  color: var(--primary);
+  margin-bottom: 1rem;
+}
+.feature-card h5 {
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+.feature-card p {
+  color: var(--gray-500);
+  font-size: 0.95rem;
+}
+.blog-preview-card {
+  border: none;
+  border-radius: var(--radius);
+  background: white;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+  height: 100%;
+}
+.blog-preview-card:hover {
+  transform: translateY(-6px);
+  box-shadow: var(--shadow-lg);
+}
+.cta-banner {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  border-radius: var(--radius);
+  padding: 3rem 2rem;
+  text-align: center;
+  margin-top: 3rem;
+}
+.cta-banner h3 { font-weight: 700; color: white; }
+.cta-banner .btn-light {
+  background: white;
+  color: var(--primary);
+  border-radius: 50px;
+  padding: 0.6rem 2.5rem;
+  font-weight: 600;
+  transition: all var(--transition);
+}
+.cta-banner .btn-light:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+}
+
+
+==================================================
+FILE: frontend\src\pages\Upload.tsx
+==================================================
+
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import { Container, Row, Col, Card, Button, Alert, Spinner, ProgressBar, Form } from 'react-bootstrap';
+import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
+import 'react-circular-progressbar/dist/styles.css';
+import './Upload.css'
+interface PredictionResult {
+  is_fake: boolean;
+  confidence: number;
+  raw_score: number;
+  frame_scores?: number[];
+  suspicious_frames?: number[];
+  num_frames?: number;
+  audio_features?: any;
+}
+
+interface ModelMetrics {
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1_score: number;
+  test_samples: number;
+}
+
+const Upload: React.FC = () => {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileType, setFileType] = useState<'video' | 'image' | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<PredictionResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<ModelMetrics | null>(null);
+  const [showFrameDetails, setShowFrameDetails] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    axios.get('http://localhost:5000/metrics')
+      .then(res => setMetrics(res.data))
+      .catch(err => console.error('Could not load metrics:', err));
+  }, []);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (file.type.startsWith('video/')) {
+        setFileType('video');
+      } else if (file.type.startsWith('image/')) {
+        setFileType('image');
+      } else {
+        setError('Please upload a video or image file');
+        return;
+      }
+      setSelectedFile(file);
+      setPreviewUrl(URL.createObjectURL(file));
+      setResult(null);
+      setError(null);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) return;
+    const formData = new FormData();
+    formData.append(fileType === 'image' ? 'image' : 'video', selectedFile);
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const endpoint = fileType === 'image' ? '/predict_image' : '/predict_video';
+      const response = await axios.post(`http://localhost:5000${endpoint}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setResult(response.data);
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Analysis failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confidencePercent = result ? result.confidence * 100 : 0;
+  const confidenceColor = result ? (result.is_fake ? '#dc3545' : '#28a745') : '#6c757d';
+
+  return (
+    <Container className="py-5">
+      <Row className="justify-content-center">
+        <Col lg={8}>
+          <Card className="shadow-lg border-0 rounded-4 overflow-hidden mb-4">
+            <div className="bg-gradient-primary p-4 text-white text-center">
+              <h1 className="display-5 fw-bold">Upload & Analyze</h1>
+              <p className="lead mb-0">Upload a video or image to check its authenticity</p>
+            </div>
+            <Card.Body className="p-4">
+              <div
+                className="dropzone"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files[0];
+                  if (file) {
+                    if (file.type.startsWith('video/')) setFileType('video');
+                    else if (file.type.startsWith('image/')) setFileType('image');
+                    else { setError('Please upload a video or image file'); return; }
+                    setSelectedFile(file);
+                    setPreviewUrl(URL.createObjectURL(file));
+                    setResult(null);
+                    setError(null);
+                  }
+                }}
+              >
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="video/*,image/*"
+                  onChange={handleFileChange}
+                  style={{ display: 'none' }}
+                />
+                <i className="bi bi-cloud-upload fs-1"></i>
+                <p className="mt-2 mb-0">Drag & drop a video or image, or click to select</p>
+                <small className="text-muted">MP4, AVI, MOV, JPG, PNG, WEBP</small>
+              </div>
+
+              {previewUrl && (
+                <div className="mt-4">
+                  {fileType === 'video' ? (
+                    <video className="w-100 rounded-3 shadow-sm" controls src={previewUrl} style={{ maxHeight: '400px' }} />
+                  ) : (
+                    <img src={previewUrl} alt="Preview" className="w-100 rounded-3 shadow-sm" style={{ maxHeight: '400px', objectFit: 'contain' }} />
+                  )}
+                </div>
+              )}
+
+              {selectedFile && !loading && !result && (
+                <div className="text-center mt-4">
+                  <Button variant="primary" size="lg" onClick={handleUpload} className="px-5 rounded-pill">
+                    Analyze {fileType === 'image' ? 'Image' : 'Video'}
+                  </Button>
+                </div>
+              )}
+
+              {loading && (
+                <div className="text-center mt-4">
+                  <Spinner animation="border" variant="primary" />
+                  <p className="mt-2">Analyzing... this may take a moment.</p>
+                  <ProgressBar animated now={100} className="w-50 mx-auto" />
+                </div>
+              )}
+
+              {error && <Alert variant="danger" className="mt-4">{error}</Alert>}
+
+              {result && (
+                <div className="mt-4 p-4 rounded-4 bg-light text-center">
+                  <div className="d-flex justify-content-center mb-3">
+                    <div style={{ width: 150, height: 150 }}>
+                      <CircularProgressbar
+                        value={confidencePercent}
+                        text={`${Math.round(confidencePercent)}%`}
+                        styles={buildStyles({
+                          textSize: '20px',
+                          pathColor: confidenceColor,
+                          textColor: confidenceColor,
+                          trailColor: '#e9ecef'
+                        })}
+                      />
+                    </div>
+                  </div>
+                  <h2 className={result.is_fake ? 'text-danger' : 'text-success'}>
+                    {result.is_fake ? '🚨 DEEPFAKE DETECTED' : '✅ MEDIA APPEARS REAL'}
+                  </h2>
+                  <p className="lead">Confidence: {confidencePercent.toFixed(2)}%</p>
+                  <p className="text-muted">Raw score: {result.raw_score.toFixed(4)} (0=Real, 1=Fake)</p>
+                  {fileType === 'video' && result.frame_scores && (
+                    <Button variant="outline-secondary" onClick={() => setShowFrameDetails(!showFrameDetails)} className="mt-2">
+                      {showFrameDetails ? 'Hide Frame Details' : 'Show Frame Details'}
+                    </Button>
+                  )}
+                  <Button variant="outline-secondary" onClick={() => { setSelectedFile(null); setPreviewUrl(null); setResult(null); setFileType(null); }} className="mt-2 ms-2">
+                    Test Another
+                  </Button>
+                </div>
+              )}
+
+              {showFrameDetails && result && result.frame_scores && (
+                <div className="mt-4">
+                  <h5>Frame‑by‑Frame Analysis</h5>
+                  <p className="text-muted small">Green = Real, Red = Fake. The model analyzes each frame independently.</p>
+                  <div className="d-flex flex-wrap" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    {result.frame_scores.map((score, idx) => (
+                      <div
+                        key={idx}
+                        className="m-1 p-1 text-center"
+                        style={{
+                          width: '30px',
+                          height: '30px',
+                          borderRadius: '4px',
+                          background: `rgba(255, 0, 0, ${score})`
+                        }}
+                        title={`Frame ${idx + 1}: ${Math.round(score * 100)}% fake`}
+                      >
+                        <small style={{ color: score > 0.5 ? 'white' : 'black', fontSize: '8px' }}>
+                          {idx + 1}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                  {result.suspicious_frames && result.suspicious_frames.length > 0 && (
+                    <div className="mt-3">
+                      <Alert variant="warning">
+                        <i className="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Suspicious frames:</strong> {result.suspicious_frames.map(f => `Frame ${f + 1}`).join(', ')}
+                        <br />
+                        <small>These frames show high manipulation probability (70%).</small>
+                      </Alert>
+                    </div>
+                  )}
+                  {result.audio_features && result.audio_features.has_audio && (
+                    <div className="mt-3">
+                      <Alert variant={result.audio_features.is_suspicious ? 'warning' : 'info'}>
+                        <i className="bi bi-music-note me-2"></i>
+                        <strong>Audio Analysis:</strong>{' '}
+                        {result.audio_features.is_suspicious ? 'Unusual audio patterns detected.' : 'Audio appears normal.'}
+                        <br />
+                        <small>RMS: {result.audio_features.rms?.toFixed(4)} | Spectral Centroid: {result.audio_features.spectral_centroid?.toFixed(0)}</small>
+                      </Alert>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card.Body>
+          </Card>
+
+          {metrics && (
+            <Card className="shadow-sm border-0 rounded-4">
+              <Card.Body>
+                <h4 className="mb-3">Model Performance (on test set)</h4>
+                <Row>
+                  <Col md={3} sm={6} className="mb-3">
+                    <div className="metric-card text-center">
+                      <h6 className="text-muted">Accuracy</h6>
+                      <h3 className="text-primary">{(metrics.accuracy * 100).toFixed(1)}%</h3>
+                    </div>
+                  </Col>
+                  <Col md={3} sm={6} className="mb-3">
+                    <div className="metric-card text-center">
+                      <h6 className="text-muted">Precision</h6>
+                      <h3 className="text-success">{(metrics.precision * 100).toFixed(1)}%</h3>
+                    </div>
+                  </Col>
+                  <Col md={3} sm={6} className="mb-3">
+                    <div className="metric-card text-center">
+                      <h6 className="text-muted">Recall</h6>
+                      <h3 className="text-info">{(metrics.recall * 100).toFixed(1)}%</h3>
+                    </div>
+                  </Col>
+                  <Col md={3} sm={6} className="mb-3">
+                    <div className="metric-card text-center">
+                      <h6 className="text-muted">F1 Score</h6>
+                      <h3 className="text-warning">{(metrics.f1_score * 100).toFixed(1)}%</h3>
+                    </div>
+                  </Col>
+                </Row>
+                <p className="text-muted text-center mt-2">Evaluated on {metrics.test_samples} test videos</p>
+              </Card.Body>
+            </Card>
+          )}
+        </Col>
+      </Row>
+    </Container>
+  );
+};
+
+export default Upload;
+
+
+==================================================
+FILE: frontend\src\pages\Upload.css
+==================================================
+
+/* ===== UPLOAD PAGE ===== */
+.upload-header {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  padding: 2rem 1.5rem;
+  border-radius: var(--radius) var(--radius) 0 0;
+  text-align: center;
+}
+.upload-header h1 { color: white; font-weight: 700; }
+.upload-header p { opacity: 0.9; margin-bottom: 0; }
+
+.upload-dropzone {
+  background: white;
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius);
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.upload-dropzone:hover {
+  border-color: var(--primary);
+  background: var(--gray-50);
+}
+.upload-dropzone .icon { font-size: 3rem; color: var(--gray-400); transition: all var(--transition); }
+.upload-dropzone:hover .icon { color: var(--primary); transform: translateY(-4px); }
+.upload-dropzone p { margin: 0.5rem 0 0; }
+.upload-dropzone small { color: var(--gray-500); }
+
+.upload-preview {
+  margin-top: 1.5rem;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.upload-preview video,
+.upload-preview img {
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+}
+
+.upload-result {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: var(--gray-50);
+  border-radius: var(--radius);
+  text-align: center;
+}
+.upload-result .gauge {
+  width: 150px;
+  height: 150px;
+  margin: 0 auto;
+}
+.upload-result .verdict {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin-top: 0.5rem;
+}
+.upload-result .verdict.fake { color: var(--danger); }
+.upload-result .verdict.real { color: var(--success); }
+.upload-result .confidence { font-size: 1.2rem; color: var(--gray-600); }
+.upload-result .raw-score { font-size: 0.9rem; color: var(--gray-400); }
+
+.frame-heatmap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: white;
+  border-radius: var(--radius-sm);
+}
+.frame-heatmap .frame-cell {
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 600;
+  transition: all var(--transition);
+}
+.frame-heatmap .frame-cell:hover { transform: scale(1.1); }
+
+.audio-alert { font-size: 0.9rem; }
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.metric-item {
+  background: white;
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition);
+}
+.metric-item:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+.metric-item .label { font-size: 0.75rem; text-transform: uppercase; color: var(--gray-500); letter-spacing: 0.5px; }
+.metric-item .value { font-size: 1.8rem; font-weight: 700; }
+
+
+==================================================
+FILE: .gitignore
+==================================================
+
+# Python virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Dataset (large)
+SDFVD2.0_real/
+SDFVD2.0_fake/
+processed_sequences/
+new_videos/
+image_datasets/
+
+# Model files (large)
+*.h5
+*.pth
+*.pt
+models/
+
+# Temporary files
+*.tmp
+temp/
+
+# Frontend build
+frontend/build/
+frontend/node_modules/
+
+# Backend logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+
+
+==================================================
+FILE: vercel.json
+==================================================
+
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json"
+}

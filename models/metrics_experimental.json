@@ -1,0 +1,65 @@
+{
+    "model": "Experimental CNN-LSTM",
+    "test_samples": 176,
+    "accuracy": 0.4715909090909091,
+    "precision": 0.4715909090909091,
+    "recall": 1.0,
+    "f1_score": 0.640926640926641,
+    "roc_auc": 0.38813317787278145,
+    "pr_auc": 0.4001835855507797,
+    "confusion_matrix": [
+        [
+            0,
+            93
+        ],
+        [
+            0,
+            83
+        ]
+    ],
+    "classification_report": {
+        "REAL": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1-score": 0.0,
+            "support": 93.0
+        },
+        "FAKE": {
+            "precision": 0.4715909090909091,
+            "recall": 1.0,
+            "f1-score": 0.640926640926641,
+            "support": 83.0
+        },
+        "accuracy": 0.4715909090909091,
+        "macro avg": {
+            "precision": 0.23579545454545456,
+            "recall": 0.5,
+            "f1-score": 0.3204633204633205,
+            "support": 176.0
+        },
+        "weighted avg": {
+            "precision": 0.22239798553719006,
+            "recall": 0.4715909090909091,
+            "f1-score": 0.3022551772551773,
+            "support": 176.0
+        }
+    },
+    "keras_test_metrics": {
+        "accuracy": 0.47159090638160706,
+        "loss": 0.695431113243103,
+        "pr_auc": 0.4627108573913574,
+        "precision": 0.47159090638160706,
+        "recall": 1.0,
+        "roc_auc": 0.489312082529068
+    },
+    "prediction_threshold": 0.5,
+    "class_mapping": {
+        "0": "REAL",
+        "1": "FAKE"
+    },
+    "dataset_split": {
+        "training_samples": 548,
+        "validation_samples": 186,
+        "testing_samples": 176
+    }
+}
